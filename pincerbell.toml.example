@@ -1,0 +1,23 @@
+# pincerbell configuration. Copy to pincerbell.toml and adjust; a missing
+# config file starts the gateway with these defaults and no apps.
+
+# HTTP listen address. Put a TLS-terminating reverse proxy in front for
+# anything beyond local testing. (The default avoids port 5000, which macOS
+# occupies with its AirPlay receiver.)
+#listen = "127.0.0.1:8300"
+
+# A notification for an app_id with no [apps] entry is logged and skipped by
+# default. Setting this to true rejects such pushkeys instead, which makes
+# the homeserver DELETE the pusher permanently -- enable only once the app
+# list below is known-complete.
+#reject_unknown_apps = false
+
+# One table per app this gateway delivers for, keyed by the app_id that
+# clients register their pusher with.
+#
+# kind = "log" writes notification metadata (never message content) to the
+# log instead of contacting a push service -- for development and testing.
+# Real providers (APNs, FCM) are not implemented yet.
+#
+#[apps."org.example.app"]
+#kind = "log"
