@@ -26,7 +26,21 @@
 #
 # kind = "log" writes notification metadata (never message content) to the
 # log instead of contacting a push service -- for development and testing.
-# Real providers (APNs, FCM) are not implemented yet.
 #
 #[apps."org.example.app"]
 #kind = "log"
+
+# kind = "fcm" delivers via Firebase Cloud Messaging (HTTP v1 API). The
+# pushkey is the FCM registration token. Messages are data-only and carry
+# notification METADATA (event_id, room_id, type, sender, ...) -- never the
+# event content; the app fetches the event itself. Requires a Google
+# service-account JSON file with access to the Firebase project
+# (roles/firebasemessaging.admin or equivalent).
+#
+#[apps."org.example.androidapp"]
+#kind = "fcm"
+#service_account_file = "/etc/pincerbell/service-account.json"
+## project_id defaults to the service account's own; override if they differ:
+#project_id = "my-project"
+## API endpoint override (tests/proxies): defaults to https://fcm.googleapis.com
+#api_root = "https://fcm.googleapis.com"

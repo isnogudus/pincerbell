@@ -50,13 +50,25 @@ fn default_dedup_max_entries() -> usize {
     65_536
 }
 
-/// Per-app delivery backend. `kind = "log"` writes notification metadata to
-/// the log instead of contacting a push service -- the development/testing
-/// sink until real providers (APNs, FCM) exist.
+/// Per-app delivery backend.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AppConfig {
+    /// Writes notification metadata to the log instead of contacting a push
+    /// service -- the development/testing sink.
     Log,
+    /// Firebase Cloud Messaging (HTTP v1), authorized via a Google
+    /// service-account JSON file.
+    Fcm {
+        service_account_file: std::path::PathBuf,
+        /// Defaults to the service account's own project_id.
+        #[serde(default)]
+        project_id: Option<String>,
+        /// API endpoint override; for tests and proxies. Defaults to
+        /// https://fcm.googleapis.com.
+        #[serde(default)]
+        api_root: Option<String>,
+    },
 }
 
 impl Config {
@@ -104,6 +116,33 @@ mod tests {
         assert_eq!(c.listen, "0.0.0.0:6000");
         assert!(c.reject_unknown_apps);
         assert!(matches!(c.apps["org.example.app"], AppConfig::Log));
+    }
+
+    #[test]
+    fn fcm_app_table_parses() {
+        let c: Config = toml::from_str(
+            r#"
+            [apps."org.example.app"]
+            kind = "fcm"
+            service_account_file = "/etc/pincerbell/sa.json"
+            "#,
+        )
+        .unwrap();
+        match &c.apps["org.example.app"] {
+            AppConfig::Fcm {
+                service_account_file,
+                project_id,
+                api_root,
+            } => {
+                assert_eq!(
+                    service_account_file,
+                    std::path::Path::new("/etc/pincerbell/sa.json")
+                );
+                assert!(project_id.is_none());
+                assert!(api_root.is_none());
+            }
+            other => panic!("expected fcm, got {other:?}"),
+        }
     }
 
     #[test]

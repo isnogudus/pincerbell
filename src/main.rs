@@ -6,7 +6,9 @@
 mod api;
 mod config;
 mod dedup;
+mod fcm;
 mod gateway;
+mod provider;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -71,7 +73,14 @@ async fn main() -> ExitCode {
     );
 
     let listen = config.listen.clone();
-    let app = gateway::router(Arc::new(AppState::new(config)));
+    let state = match AppState::new(config) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("config: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let app = gateway::router(Arc::new(state));
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(l) => l,
         Err(e) => {

@@ -44,10 +44,10 @@ impl DedupCache {
         }
     }
 
-    /// Records a delivery and reports whether it duplicates one already
-    /// recorded within the TTL: false = first sighting, deliver; true =
-    /// duplicate, suppress. The suppression window is fixed from the first
-    /// delivery -- a duplicate does not extend it.
+    /// Reports whether this delivery duplicates one recorded within the TTL.
+    /// Read-only: checking must not create a record -- only a SUCCESSFUL
+    /// delivery is recorded (via [`DedupCache::record`]), otherwise a failed
+    /// attempt would wrongly suppress the homeserver's retry.
     pub fn is_duplicate(&self, event_id: &str, app_id: &str, pushkey: &str) -> bool {
         self.is_duplicate_at(Instant::now(), event_id, app_id, pushkey)
     }
@@ -55,6 +55,24 @@ impl DedupCache {
     fn is_duplicate_at(&self, now: Instant, event_id: &str, app_id: &str, pushkey: &str) -> bool {
         if self.ttl.is_zero() {
             return false; // dedup disabled
+        }
+        let inner = self.inner.lock().unwrap();
+        let key = (event_id.to_owned(), app_id.to_owned(), pushkey.to_owned());
+        match inner.seen.get(&key) {
+            Some(&t) => now.duration_since(t) < self.ttl,
+            None => false,
+        }
+    }
+
+    /// Records a successful delivery. The suppression window is fixed from
+    /// the first recording -- re-recording does not extend it.
+    pub fn record(&self, event_id: &str, app_id: &str, pushkey: &str) {
+        self.record_at(Instant::now(), event_id, app_id, pushkey);
+    }
+
+    fn record_at(&self, now: Instant, event_id: &str, app_id: &str, pushkey: &str) {
+        if self.ttl.is_zero() {
+            return;
         }
         let mut inner = self.inner.lock().unwrap();
 
@@ -74,9 +92,8 @@ impl DedupCache {
         if let Some(&t) = inner.seen.get(&key)
             && now.duration_since(t) < self.ttl
         {
-            return true;
+            return; // window stays anchored to the first delivery
         }
-
         inner.seen.insert(key.clone(), now);
         inner.order.push_back((now, key));
 
@@ -89,7 +106,6 @@ impl DedupCache {
                 inner.seen.remove(&key);
             }
         }
-        false
     }
 }
 
@@ -108,36 +124,58 @@ mod tests {
         let d = dedup(1000);
         let now = Instant::now();
         assert!(!d.is_duplicate_at(now, "$e1", "app", "pk"));
+        d.record_at(now, "$e1", "app", "pk");
         assert!(d.is_duplicate_at(now + Duration::from_secs(1), "$e1", "app", "pk"));
+    }
+
+    #[test]
+    fn checking_without_recording_does_not_suppress() {
+        // A failed delivery checks but never records -- the retry must pass.
+        let d = dedup(1000);
+        let now = Instant::now();
+        assert!(!d.is_duplicate_at(now, "$e1", "app", "pk"));
+        assert!(!d.is_duplicate_at(now + Duration::from_secs(1), "$e1", "app", "pk"));
     }
 
     #[test]
     fn same_event_different_device_is_no_duplicate() {
         let d = dedup(1000);
         let now = Instant::now();
-        assert!(!d.is_duplicate_at(now, "$e1", "app", "pk-a"));
+        d.record_at(now, "$e1", "app", "pk-a");
         assert!(!d.is_duplicate_at(now, "$e1", "app", "pk-b"));
         assert!(!d.is_duplicate_at(now, "$e1", "other.app", "pk-a"));
+        assert!(d.is_duplicate_at(now, "$e1", "app", "pk-a"));
     }
 
     #[test]
     fn entry_expires_after_ttl() {
         let d = dedup(1000);
         let now = Instant::now();
-        assert!(!d.is_duplicate_at(now, "$e1", "app", "pk"));
+        d.record_at(now, "$e1", "app", "pk");
         assert!(!d.is_duplicate_at(now + TTL, "$e1", "app", "pk"));
-        // ... and the re-recording starts a fresh window.
+        // ... and a re-recording starts a fresh window.
+        d.record_at(now + TTL, "$e1", "app", "pk");
         assert!(d.is_duplicate_at(now + TTL + Duration::from_secs(1), "$e1", "app", "pk"));
+    }
+
+    #[test]
+    fn recording_a_duplicate_does_not_extend_the_window() {
+        let d = dedup(1000);
+        let now = Instant::now();
+        d.record_at(now, "$e1", "app", "pk");
+        d.record_at(now + Duration::from_secs(100), "$e1", "app", "pk");
+        // Window is anchored to the FIRST recording.
+        assert!(!d.is_duplicate_at(now + TTL, "$e1", "app", "pk"));
     }
 
     #[test]
     fn size_cap_evicts_oldest() {
         let d = dedup(2);
         let now = Instant::now();
-        assert!(!d.is_duplicate_at(now, "$e1", "app", "pk"));
-        assert!(!d.is_duplicate_at(now + Duration::from_secs(1), "$e2", "app", "pk"));
-        assert!(!d.is_duplicate_at(now + Duration::from_secs(2), "$e3", "app", "pk"));
-        // $e1 was evicted by the cap, $e2/$e3 are still present.
+        d.record_at(now, "$e1", "app", "pk");
+        d.record_at(now + Duration::from_secs(1), "$e2", "app", "pk");
+        d.record_at(now + Duration::from_secs(2), "$e3", "app", "pk");
+        // $e1 was evicted by the cap, $e3 is still present.
         assert!(!d.is_duplicate_at(now + Duration::from_secs(3), "$e1", "app", "pk"));
         assert!(d.is_duplicate_at(now + Duration::from_secs(3), "$e3", "app", "pk"));
     }
@@ -146,12 +184,12 @@ mod tests {
     fn re_recorded_key_survives_stale_order_entry() {
         let d = dedup(1000);
         let now = Instant::now();
-        assert!(!d.is_duplicate_at(now, "$e1", "app", "pk"));
-        // Expires, is re-recorded (leaving a stale order entry) ...
-        assert!(!d.is_duplicate_at(now + TTL, "$e1", "app", "pk"));
-        // ... a later pruning pass must not drop the fresh recording when it
-        // discards the stale first-order entry.
-        assert!(!d.is_duplicate_at(now + TTL, "$e2", "app", "pk"));
+        d.record_at(now, "$e1", "app", "pk");
+        // Expires and is re-recorded (leaving a stale order entry) ...
+        d.record_at(now + TTL, "$e1", "app", "pk");
+        // ... a later pruning pass discards the stale first-order entry and
+        // must not drop the fresh recording with it.
+        d.record_at(now + TTL, "$e2", "app", "pk");
         assert!(d.is_duplicate_at(now + TTL + Duration::from_secs(1), "$e1", "app", "pk"));
     }
 
@@ -159,7 +197,7 @@ mod tests {
     fn zero_ttl_disables_dedup() {
         let d = DedupCache::new(Duration::ZERO, 1000);
         let now = Instant::now();
-        assert!(!d.is_duplicate_at(now, "$e1", "app", "pk"));
+        d.record_at(now, "$e1", "app", "pk");
         assert!(!d.is_duplicate_at(now, "$e1", "app", "pk"));
     }
 }
