@@ -94,7 +94,22 @@ pub enum AppConfig {
         /// Default notification sound; a push-rule sound tweak wins.
         #[serde(default)]
         sound: Option<String>,
+        /// "alert" (default) or "voip". VoIP pushes target a PushKit VoIP
+        /// device token, are always sent at full priority and carry no
+        /// alert/badge -- the app's CallKit integration handles the UI. The
+        /// topic must then be the app's VoIP topic (<bundle id>.voip).
+        #[serde(default)]
+        push_type: ApnsPushType,
     },
+}
+
+/// The apns-push-type an APNs app sends with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApnsPushType {
+    #[default]
+    Alert,
+    Voip,
 }
 
 impl Config {

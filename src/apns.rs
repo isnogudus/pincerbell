@@ -22,6 +22,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::api::{Device, Notification, Prio};
+use crate::config::ApnsPushType;
 use crate::provider::Outcome;
 
 /// Apple: reuse a provider token for 20-60 minutes.
@@ -35,6 +36,7 @@ pub struct ApnsApp {
     key_id: String,
     default_alert_title: String,
     sound: Option<String>,
+    push_type: ApnsPushType,
     signing_key: jsonwebtoken::EncodingKey,
     token: Mutex<Option<CachedToken>>,
 }
@@ -59,6 +61,7 @@ pub struct ApnsSettings {
     pub api_root: Option<String>,
     pub default_alert_title: Option<String>,
     pub sound: Option<String>,
+    pub push_type: ApnsPushType,
 }
 
 impl ApnsApp {
@@ -90,6 +93,7 @@ impl ApnsApp {
                 .default_alert_title
                 .unwrap_or_else(|| "New message".to_owned()),
             sound: settings.sound,
+            push_type: settings.push_type,
             signing_key,
             token: Mutex::new(None),
         })
@@ -126,19 +130,25 @@ impl ApnsApp {
             Err(e) => return Outcome::Transient(e),
         };
         let url = format!("{}/3/device/{}", self.api_root, device.pushkey);
+        let (push_type, priority) = match self.push_type {
+            // VoIP pushes are always immediate -- a queued incoming call is
+            // a missed call.
+            ApnsPushType::Voip => ("voip", "10"),
+            ApnsPushType::Alert => (
+                "alert",
+                match n.priority() {
+                    Prio::High => "10",
+                    Prio::Low => "5",
+                },
+            ),
+        };
         let resp = self
             .client
             .post(url)
             .header("authorization", format!("bearer {bearer}"))
             .header("apns-topic", &self.topic)
-            .header("apns-push-type", "alert")
-            .header(
-                "apns-priority",
-                match n.priority() {
-                    Prio::High => "10",
-                    Prio::Low => "5",
-                },
-            )
+            .header("apns-push-type", push_type)
+            .header("apns-priority", priority)
             .json(&self.build_payload(n, device))
             .send()
             .await;
@@ -182,15 +192,19 @@ impl ApnsApp {
     }
 
     /// Event notifications get a rewritable fallback alert
-    /// (`mutable-content`), count-only ones just update the badge. The
-    /// notification metadata rides as custom keys next to `aps`.
+    /// (`mutable-content`), count-only ones just update the badge. VoIP
+    /// pushes carry no alert/badge at all -- the app's CallKit integration
+    /// handles the UI. The notification metadata rides as custom keys next
+    /// to `aps` either way.
     fn build_payload(&self, n: &Notification, device: &Device) -> Value {
         let mut aps = serde_json::Map::new();
         let unread = n.counts.as_ref().and_then(|c| c.unread);
-        if let Some(u) = unread {
+        if self.push_type == ApnsPushType::Alert
+            && let Some(u) = unread
+        {
             aps.insert("badge".to_owned(), json!(u));
         }
-        if n.event_id.is_some() {
+        if self.push_type == ApnsPushType::Alert && n.event_id.is_some() {
             aps.insert("mutable-content".to_owned(), json!(1));
             aps.insert(
                 "alert".to_owned(),
@@ -248,7 +262,7 @@ nyE8g0es+6V9NOP7j3xz0FzBN8+hRANCAAQWQmKTghF7aFUSjmgmcbRG0xCM9O5w
 -----END PRIVATE KEY-----
 ";
 
-    fn test_app() -> ApnsApp {
+    fn test_app_with(push_type: ApnsPushType) -> ApnsApp {
         let key_path = std::env::temp_dir().join(format!(
             "pincerbell-test-apns-{}-{:?}.p8",
             std::process::id(),
@@ -264,10 +278,15 @@ nyE8g0es+6V9NOP7j3xz0FzBN8+hRANCAAQWQmKTghF7aFUSjmgmcbRG0xCM9O5w
             api_root: None,
             default_alert_title: None,
             sound: None,
+            push_type,
         })
         .unwrap();
         std::fs::remove_file(key_path).ok();
         app
+    }
+
+    fn test_app() -> ApnsApp {
+        test_app_with(ApnsPushType::Alert)
     }
 
     fn notification(json: Value) -> Notification {
@@ -301,6 +320,24 @@ nyE8g0es+6V9NOP7j3xz0FzBN8+hRANCAAQWQmKTghF7aFUSjmgmcbRG0xCM9O5w
         assert_eq!(p["unread"], 4);
         // Event content stays out of the push payload.
         assert!(p.get("content").is_none());
+    }
+
+    #[test]
+    fn voip_payload_has_no_alert_or_badge() {
+        let app = test_app_with(ApnsPushType::Voip);
+        let n = notification(json!({
+            "event_id": "$call1:example.test",
+            "room_id": "!r:example.test",
+            "type": "m.call.invite",
+            "counts": { "unread": 4 },
+            "devices": [{ "app_id": "org.example.iosapp.voip", "pushkey": "voip-token-1" }]
+        }));
+        let p = app.build_payload(&n, &n.devices[0]);
+
+        assert_eq!(p["aps"], json!({}));
+        // The metadata still rides along for the CallKit handler.
+        assert_eq!(p["event_id"], "$call1:example.test");
+        assert_eq!(p["type"], "m.call.invite");
     }
 
     #[test]

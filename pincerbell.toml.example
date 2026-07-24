@@ -62,3 +62,7 @@
 ## default_alert_title = "New message"  # shown only if the app extension
 ##                                      # cannot rewrite the alert in time
 ## sound = "default"              # a push-rule sound tweak wins over this
+## push_type = "alert"            # or "voip": PushKit VoIP pushes -- always
+##                                # full priority, no alert/badge (CallKit
+##                                # handles the UI); topic must then be the
+##                                # app's VoIP topic (<bundle id>.voip)

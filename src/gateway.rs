@@ -472,6 +472,15 @@ tLxJR74/6WyQh19rA/hKULwq
             team_id = "TESTTEAM12"
             topic = "org.example.iosapp"
             api_root = "{api_root}"
+
+            [apps."org.example.iosapp.voip"]
+            kind = "apns"
+            key_file = {key_path:?}
+            key_id = "TESTKEY123"
+            team_id = "TESTTEAM12"
+            topic = "org.example.iosapp.voip"
+            api_root = "{api_root}"
+            push_type = "voip"
             "#,
             key_path = key_path.display().to_string(),
         ))
@@ -526,5 +535,35 @@ tLxJR74/6WyQh19rA/hKULwq
 
         let (status, _) = notify_call(r, notification("org.example.iosapp", "tok-throttle")).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn apns_voip_app_sends_voip_type_at_full_priority() {
+        let (api_root, captured) = spawn_mock_apns().await;
+        let r = apns_router(&api_root).await;
+
+        let body = serde_json::json!({
+            "notification": {
+                "event_id": "$call1:example.test",
+                "room_id": "!room:example.test",
+                "type": "m.call.invite",
+                "prio": "low", // voip must STILL go out at full priority
+                "devices": [
+                    { "app_id": "org.example.iosapp.voip", "pushkey": "tok-voip" },
+                ],
+            }
+        });
+        let (status, json) = notify_call(r, body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!([]));
+
+        let captured = captured.lock().unwrap();
+        let (token, meta, payload) = &captured[0];
+        assert_eq!(token, "tok-voip");
+        assert_eq!(meta["apns-topic"], "org.example.iosapp.voip");
+        assert_eq!(meta["apns-push-type"], "voip");
+        assert_eq!(meta["apns-priority"], "10");
+        assert!(payload["aps"].as_object().unwrap().is_empty());
+        assert_eq!(payload["type"], "m.call.invite");
     }
 }

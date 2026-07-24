@@ -52,6 +52,7 @@ impl Provider {
                 api_root,
                 default_alert_title,
                 sound,
+                push_type,
             } => Ok(Provider::Apns(Box::new(ApnsApp::new(ApnsSettings {
                 key_file: key_file.clone(),
                 key_id: key_id.clone(),
@@ -61,6 +62,7 @@ impl Provider {
                 api_root: api_root.clone(),
                 default_alert_title: default_alert_title.clone(),
                 sound: sound.clone(),
+                push_type: *push_type,
             })?))),
         }
     }
