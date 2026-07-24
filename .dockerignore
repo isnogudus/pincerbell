@@ -1,0 +1,11 @@
+target
+.git
+.github
+compose.yaml
+compose.yml.example
+pincerbell.toml
+pincerbell.toml.example
+*.p8
+*service-account*.json
+README.md
+LICENSE

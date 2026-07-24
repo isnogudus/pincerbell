@@ -40,6 +40,26 @@ their pushkeys instead (which makes homeservers delete those pushers, so
 enable it only once the app list is complete). Message content is never
 written to the log — metadata only.
 
+## Docker
+
+A multi-stage [`Dockerfile`](Dockerfile) builds a static musl binary into a
+bare Alpine image (TLS roots are compiled in, so the runtime stage needs no
+extra packages). Configuration is a mounted TOML — it **must** set
+`listen = "0.0.0.0:8300"`, since the built-in localhost default is
+unreachable from outside the container; FCM service-account / APNs .p8 key
+files are mounted next to it.
+
+[`compose.yml.example`](compose.yml.example) shows the setup: copy it to
+`compose.yaml` (gitignored, like `pincerbell.toml` and any key files — real
+credentials never land in the repo), join the homeserver's Docker network,
+and point the pusher URL at `http://pincerbell:8300/_matrix/push/v1/notify`.
+
+```sh
+cp compose.yml.example compose.yaml
+cp pincerbell.toml.example pincerbell.toml   # set listen, add your apps
+docker compose up --build
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

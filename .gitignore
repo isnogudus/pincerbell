@@ -1,1 +1,10 @@
 /target
+
+# Real deployment files -- only the .example templates are tracked. Keeps
+# credentials (FCM service accounts, APNs .p8 keys) and site-specific
+# network names out of the repo.
+/pincerbell.toml
+/compose.yaml
+/compose.yml
+*.p8
+*service-account*.json

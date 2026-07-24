@@ -1,0 +1,42 @@
+# pincerbell -- Docker Compose example. Copy to compose.yaml and adjust --
+# that copy is gitignored, so your real network names and key file paths
+# never land in the repo:
+#
+#   cp compose.yml.example compose.yaml
+#   cp pincerbell.toml.example pincerbell.toml   # set listen = "0.0.0.0:8300"!
+#   docker compose up --build
+#
+# The service joins the external "matrix" network below so a dockerized
+# homeserver reaches the gateway by service name -- the pusher URL is then
+#
+#   http://pincerbell:8300/_matrix/push/v1/notify
+#
+# Rename the network to whatever your homeserver stack actually uses (check
+# `docker network ls`), or drop it and publish the port instead.
+
+services:
+  pincerbell:
+    build:
+      context: .
+    restart: unless-stopped
+    networks:
+      - matrix
+    # ports:
+    #   - "8300:8300"   # uncomment for direct host access (testing)
+    volumes:
+      # The config must set listen = "0.0.0.0:8300" (the built-in default
+      # binds 127.0.0.1, unreachable from outside the container).
+      - ./pincerbell.toml:/etc/pincerbell/pincerbell.toml:ro
+      # Key files referenced from the config, mounted next to it:
+      # - ./service-account.json:/etc/pincerbell/service-account.json:ro
+      # - ./AuthKey_ABC123DEFG.p8:/etc/pincerbell/AuthKey_ABC123DEFG.p8:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8300/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  matrix:
+    external: true
+    # name: matrix   # set explicitly if `docker network ls` shows another name
