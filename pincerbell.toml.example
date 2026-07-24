@@ -44,3 +44,21 @@
 #project_id = "my-project"
 ## API endpoint override (tests/proxies): defaults to https://fcm.googleapis.com
 #api_root = "https://fcm.googleapis.com"
+
+# kind = "apns" delivers via the Apple Push Notification service (HTTP/2,
+# token-based auth). The pushkey is the APNs device token. Event pushes get
+# a rewritable fallback alert (mutable-content: 1) plus the notification
+# metadata as custom payload keys -- the app's notification service
+# extension fetches the event and rewrites the alert; event content is
+# never included. Count-only notifications become badge-only updates.
+#
+#[apps."org.example.iosapp"]
+#kind = "apns"
+#key_file = "/etc/pincerbell/AuthKey_ABC123DEFG.p8"
+#key_id   = "ABC123DEFG"          # Apple key ID of the .p8 key
+#team_id  = "TEAM123456"          # Apple developer team ID
+#topic    = "org.example.iosapp"  # the app's bundle ID (apns-topic)
+## sandbox = false                # api.sandbox.push.apple.com for dev builds
+## default_alert_title = "New message"  # shown only if the app extension
+##                                      # cannot rewrite the alert in time
+## sound = "default"              # a push-rule sound tweak wins over this

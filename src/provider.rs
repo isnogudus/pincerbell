@@ -1,6 +1,7 @@
 //! Delivery backends and the outcome vocabulary the gateway acts on.
 
 use crate::api::{Device, Notification};
+use crate::apns::{ApnsApp, ApnsSettings};
 use crate::config::AppConfig;
 use crate::fcm::FcmApp;
 
@@ -8,9 +9,11 @@ use crate::fcm::FcmApp;
 pub enum Provider {
     /// Logs notification metadata (never content); development/testing sink.
     Log,
-    /// Firebase Cloud Messaging, HTTP v1 API. Boxed: the FCM state dwarfs
-    /// the other variants.
+    /// Firebase Cloud Messaging, HTTP v1 API. Boxed: the backend state
+    /// dwarfs the Log variant.
     Fcm(Box<FcmApp>),
+    /// Apple Push Notification service, HTTP/2 provider API.
+    Apns(Box<ApnsApp>),
 }
 
 /// What became of one device's delivery.
@@ -40,6 +43,25 @@ impl Provider {
                 project_id.clone(),
                 api_root.clone(),
             )?))),
+            AppConfig::Apns {
+                key_file,
+                key_id,
+                team_id,
+                topic,
+                sandbox,
+                api_root,
+                default_alert_title,
+                sound,
+            } => Ok(Provider::Apns(Box::new(ApnsApp::new(ApnsSettings {
+                key_file: key_file.clone(),
+                key_id: key_id.clone(),
+                team_id: team_id.clone(),
+                topic: topic.clone(),
+                sandbox: *sandbox,
+                api_root: api_root.clone(),
+                default_alert_title: default_alert_title.clone(),
+                sound: sound.clone(),
+            })?))),
         }
     }
 
@@ -59,6 +81,7 @@ impl Provider {
                 Outcome::Delivered
             }
             Provider::Fcm(app) => app.deliver(n, device).await,
+            Provider::Apns(app) => app.deliver(n, device).await,
         }
     }
 }

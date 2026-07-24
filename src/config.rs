@@ -69,6 +69,32 @@ pub enum AppConfig {
         #[serde(default)]
         api_root: Option<String>,
     },
+    /// Apple Push Notification service (HTTP/2 provider API), token-based
+    /// authentication via a .p8 signing key.
+    Apns {
+        /// The .p8 key downloaded from the Apple developer account.
+        key_file: std::path::PathBuf,
+        /// Apple key ID belonging to the .p8 key.
+        key_id: String,
+        /// Apple developer team ID.
+        team_id: String,
+        /// The app's bundle ID (the apns-topic header).
+        topic: String,
+        /// Use the sandbox environment (api.sandbox.push.apple.com).
+        #[serde(default)]
+        sandbox: bool,
+        /// API endpoint override; for tests and proxies. Defaults to the
+        /// production or sandbox APNs endpoint depending on `sandbox`.
+        #[serde(default)]
+        api_root: Option<String>,
+        /// Fallback alert title, shown only when the app's notification
+        /// service extension cannot rewrite the notification in time.
+        #[serde(default)]
+        default_alert_title: Option<String>,
+        /// Default notification sound; a push-rule sound tweak wins.
+        #[serde(default)]
+        sound: Option<String>,
+    },
 }
 
 impl Config {
@@ -142,6 +168,36 @@ mod tests {
                 assert!(api_root.is_none());
             }
             other => panic!("expected fcm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apns_app_table_parses() {
+        let c: Config = toml::from_str(
+            r#"
+            [apps."org.example.iosapp"]
+            kind = "apns"
+            key_file = "/etc/pincerbell/AuthKey_TESTKEY123.p8"
+            key_id = "TESTKEY123"
+            team_id = "TESTTEAM12"
+            topic = "org.example.iosapp"
+            "#,
+        )
+        .unwrap();
+        match &c.apps["org.example.iosapp"] {
+            AppConfig::Apns {
+                key_id,
+                team_id,
+                topic,
+                sandbox,
+                ..
+            } => {
+                assert_eq!(key_id, "TESTKEY123");
+                assert_eq!(team_id, "TESTTEAM12");
+                assert_eq!(topic, "org.example.iosapp");
+                assert!(!sandbox);
+            }
+            other => panic!("expected apns, got {other:?}"),
         }
     }
 

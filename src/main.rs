@@ -4,6 +4,7 @@
 //! <https://spec.matrix.org/latest/push-gateway-api/>.
 
 mod api;
+mod apns;
 mod config;
 mod dedup;
 mod fcm;

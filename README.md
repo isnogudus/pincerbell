@@ -10,17 +10,21 @@ port of, based on, or affiliated with any other Push Gateway implementation
 the Matrix.org Foundation.
 
 **Status:** early stage. The `POST /_matrix/push/v1/notify` endpoint is
-implemented with duplicate suppression for homeserver retries and two
+implemented with duplicate suppression for homeserver retries and three
 delivery backends: **FCM** (Firebase Cloud Messaging, HTTP v1 API, via a
-Google service account) and a **log sink** for development and testing.
-APNs does not exist yet.
+Google service account), **APNs** (Apple Push Notification service, HTTP/2
+provider API, token-based auth via a .p8 key), and a **log sink** for
+development and testing.
 
-FCM messages are data-only and carry notification metadata (event_id,
-room_id, type, sender, ...) — never the event content; the client app
-fetches the event itself. A pushkey is only reported as rejected when FCM
-answers `UNREGISTERED`; transient errors fail the request with 502 so the
-homeserver retries (already-delivered devices are shielded by the duplicate
-suppression).
+Pushes never carry the event content — only notification metadata
+(event_id, room_id, type, sender, ...); the client app fetches the event
+itself. On FCM that means data-only messages; on APNs an alert with
+`mutable-content: 1` whose fallback text the app's notification service
+extension replaces after fetching the event (count-only notifications
+become badge-only updates). A pushkey is only reported as rejected on FCM
+`UNREGISTERED` / APNs `Unregistered`; transient errors fail the request
+with 502 so the homeserver retries (already-delivered devices are shielded
+by the duplicate suppression).
 
 ## Running
 

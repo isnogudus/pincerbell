@@ -395,4 +395,136 @@ tLxJR74/6WyQh19rA/hKULwq
         let (status, _) = notify_call(r, notification("org.example.app", "tok-unavailable")).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
+
+    // --- APNs end-to-end against a mock server ---
+
+    /// Captured (headers of interest, body) pairs plus the device token
+    /// from the URL.
+    type ApnsCaptured = Arc<std::sync::Mutex<Vec<(String, serde_json::Value, serde_json::Value)>>>;
+
+    /// Mock APNs: response selected by the device token in the URL:
+    /// tok-gone -> 410 Unregistered, tok-throttle -> 429, else 200.
+    async fn spawn_mock_apns() -> (String, ApnsCaptured) {
+        use axum::response::IntoResponse;
+
+        let captured: ApnsCaptured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cap = captured.clone();
+        let app = Router::new().route(
+            "/3/device/{token}",
+            axum::routing::post(
+                move |axum::extract::Path(token): axum::extract::Path<String>,
+                      headers: axum::http::HeaderMap,
+                      Json(body): Json<serde_json::Value>| {
+                    let cap = cap.clone();
+                    async move {
+                        let h = |name: &str| {
+                            headers
+                                .get(name)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("")
+                                .to_owned()
+                        };
+                        let meta = serde_json::json!({
+                            "authorization": h("authorization"),
+                            "apns-topic": h("apns-topic"),
+                            "apns-push-type": h("apns-push-type"),
+                            "apns-priority": h("apns-priority"),
+                        });
+                        cap.lock().unwrap().push((token.clone(), meta, body));
+                        match token.as_str() {
+                            "tok-gone" => (
+                                StatusCode::GONE,
+                                Json(serde_json::json!({"reason": "Unregistered"})),
+                            )
+                                .into_response(),
+                            "tok-throttle" => (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                Json(serde_json::json!({"reason": "TooManyRequests"})),
+                            )
+                                .into_response(),
+                            _ => StatusCode::OK.into_response(),
+                        }
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// Builds a router with one APNs app wired to the mock server.
+    async fn apns_router(api_root: &str) -> Router {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key_path = std::env::temp_dir().join(format!(
+            "pincerbell-test-apns-gw-{}-{seq}.p8",
+            std::process::id()
+        ));
+        std::fs::write(&key_path, crate::apns::tests::TEST_EC_KEY).unwrap();
+        let config: Config = ::toml::from_str(&format!(
+            r#"
+            [apps."org.example.iosapp"]
+            kind = "apns"
+            key_file = {key_path:?}
+            key_id = "TESTKEY123"
+            team_id = "TESTTEAM12"
+            topic = "org.example.iosapp"
+            api_root = "{api_root}"
+            "#,
+            key_path = key_path.display().to_string(),
+        ))
+        .unwrap();
+        let router = router(Arc::new(AppState::new(config).unwrap()));
+        std::fs::remove_file(key_path).ok(); // read at startup, no longer needed
+        router
+    }
+
+    #[tokio::test]
+    async fn apns_delivers_and_rejects_unregistered() {
+        let (api_root, captured) = spawn_mock_apns().await;
+        let r = apns_router(&api_root).await;
+
+        let body = serde_json::json!({
+            "notification": {
+                "event_id": "$event1:example.test",
+                "room_id": "!room:example.test",
+                "counts": { "unread": 2 },
+                "devices": [
+                    { "app_id": "org.example.iosapp", "pushkey": "tok-ios-ok" },
+                    { "app_id": "org.example.iosapp", "pushkey": "tok-gone" },
+                ],
+            }
+        });
+        let (status, json) = notify_call(r, body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!(["tok-gone"]));
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        let (token, meta, payload) = &captured[0];
+        assert_eq!(token, "tok-ios-ok");
+        assert!(
+            meta["authorization"]
+                .as_str()
+                .unwrap()
+                .starts_with("bearer ")
+        );
+        assert_eq!(meta["apns-topic"], "org.example.iosapp");
+        assert_eq!(meta["apns-push-type"], "alert");
+        assert_eq!(meta["apns-priority"], "10");
+        assert_eq!(payload["aps"]["mutable-content"], 1);
+        assert_eq!(payload["aps"]["badge"], 2);
+        assert_eq!(payload["event_id"], "$event1:example.test");
+    }
+
+    #[tokio::test]
+    async fn apns_transient_failure_asks_for_retry() {
+        let (api_root, _captured) = spawn_mock_apns().await;
+        let r = apns_router(&api_root).await;
+
+        let (status, _) = notify_call(r, notification("org.example.iosapp", "tok-throttle")).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
 }
