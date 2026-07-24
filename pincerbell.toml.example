@@ -6,6 +6,15 @@
 # occupies with its AirPlay receiver.)
 #listen = "127.0.0.1:8300"
 
+# Retry suppression: a delivered (event_id, app_id, pushkey) triple blocks
+# repeat deliveries for this many seconds -- long enough for a homeserver's
+# exponential-backoff retries, short enough that nothing accumulates. Set 0
+# to disable. Count-only notifications (no event_id) are never suppressed.
+#dedup_ttl_secs = 300
+
+# Memory cap for the suppression cache (oldest entries evicted first).
+#dedup_max_entries = 65536
+
 # A notification for an app_id with no [apps] entry is logged and skipped by
 # default. Setting this to true rejects such pushkeys instead, which makes
 # the homeserver DELETE the pusher permanently -- enable only once the app

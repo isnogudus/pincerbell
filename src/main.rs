@@ -5,6 +5,7 @@
 
 mod api;
 mod config;
+mod dedup;
 mod gateway;
 
 use std::path::PathBuf;
@@ -70,7 +71,7 @@ async fn main() -> ExitCode {
     );
 
     let listen = config.listen.clone();
-    let app = gateway::router(Arc::new(AppState { config }));
+    let app = gateway::router(Arc::new(AppState::new(config)));
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(l) => l,
         Err(e) => {

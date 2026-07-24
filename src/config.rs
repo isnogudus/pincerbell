@@ -14,6 +14,17 @@ pub struct Config {
     #[serde(default = "default_listen")]
     pub listen: String,
 
+    /// How long a delivered (event_id, app_id, pushkey) triple suppresses
+    /// repeat deliveries, in seconds -- covers homeserver retries after HTTP
+    /// errors, which use bounded exponential backoff. 0 disables suppression.
+    #[serde(default = "default_dedup_ttl_secs")]
+    pub dedup_ttl_secs: u64,
+
+    /// Memory cap for the suppression cache; oldest entries are evicted
+    /// first once it is reached.
+    #[serde(default = "default_dedup_max_entries")]
+    pub dedup_max_entries: usize,
+
     /// Whether a notification for an app_id that is not configured rejects
     /// the pushkey (making the homeserver delete the pusher permanently).
     /// Off by default: a config typo must not destroy pushers at scale --
@@ -29,6 +40,14 @@ pub struct Config {
 
 fn default_listen() -> String {
     "127.0.0.1:8300".to_owned()
+}
+
+fn default_dedup_ttl_secs() -> u64 {
+    300
+}
+
+fn default_dedup_max_entries() -> usize {
+    65_536
 }
 
 /// Per-app delivery backend. `kind = "log"` writes notification metadata to
@@ -66,6 +85,8 @@ mod tests {
         assert_eq!(c.listen, "127.0.0.1:8300");
         assert!(!c.reject_unknown_apps);
         assert!(c.apps.is_empty());
+        assert_eq!(c.dedup_ttl_secs, 300);
+        assert_eq!(c.dedup_max_entries, 65_536);
     }
 
     #[test]

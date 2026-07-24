@@ -9,9 +9,21 @@ use axum::{Json, Router};
 
 use crate::api::{Device, Notification, NotifyRequest, NotifyResponse};
 use crate::config::{AppConfig, Config};
+use crate::dedup::DedupCache;
 
 pub struct AppState {
     pub config: Config,
+    pub dedup: DedupCache,
+}
+
+impl AppState {
+    pub fn new(config: Config) -> Self {
+        let dedup = DedupCache::new(
+            std::time::Duration::from_secs(config.dedup_ttl_secs),
+            config.dedup_max_entries,
+        );
+        AppState { config, dedup }
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -35,7 +47,26 @@ async fn notify(
 
     for device in &n.devices {
         match state.config.apps.get(&device.app_id) {
-            Some(app) => deliver(app, n, device),
+            Some(app) => {
+                // Retry suppression, keyed per device: count-only
+                // notifications (no event_id) are idempotent per the spec
+                // and always pass. Suppressed is still a success, never a
+                // rejection -- the pushkey is perfectly valid.
+                if let Some(event_id) = &n.event_id
+                    && state
+                        .dedup
+                        .is_duplicate(event_id, &device.app_id, &device.pushkey)
+                {
+                    tracing::debug!(
+                        app_id = %device.app_id,
+                        pushkey = %device.pushkey,
+                        event_id = %event_id,
+                        "duplicate notification suppressed"
+                    );
+                    continue;
+                }
+                deliver(app, n, device);
+            }
             None if state.config.reject_unknown_apps => {
                 tracing::info!(app_id = %device.app_id, "unknown app_id, rejecting pushkey");
                 rejected.push(device.pushkey.clone());
@@ -79,7 +110,7 @@ mod tests {
 
     fn test_router(toml: &str) -> Router {
         let config: Config = ::toml::from_str(toml).unwrap();
-        router(Arc::new(AppState { config }))
+        router(Arc::new(AppState::new(config)))
     }
 
     async fn notify_call(
