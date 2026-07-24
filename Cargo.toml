@@ -2,6 +2,7 @@
 name = "pincerbell"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "An independent Matrix Push Gateway implementation in Rust"
 license = "MIT"
 repository = "https://github.com/isnogudus/pincerbell"
@@ -12,6 +13,7 @@ categories = ["network-programming"]
 aes-gcm = "0.10"
 axum = "0.8"
 base64 = "0.22"
+futures = "0.3"
 hkdf = "0.12"
 jsonwebtoken = "9"
 p256 = { version = "0.13", features = ["ecdh", "pem"] }

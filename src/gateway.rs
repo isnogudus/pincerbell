@@ -48,6 +48,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// What became of one device, after logging; only what the response needs.
+enum Disposition {
+    Fine,
+    Reject(String),
+    Transient,
+}
+
 /// `POST /_matrix/push/v1/notify`
 ///
 /// Answers 200 with the list of rejected pushkeys; the homeserver deletes
@@ -55,13 +62,16 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// it. A transiently failed delivery instead fails the whole request with
 /// 502 -- the homeserver retries, and duplicate suppression shields the
 /// devices that were already delivered in the first attempt.
+///
+/// Devices are delivered CONCURRENTLY: the slow path is the push services'
+/// round-trip, and one stuck service must not delay the others. A request
+/// carries one user's pushers, so the fan-out is naturally small and needs
+/// no concurrency cap.
 async fn notify(
     State(state): State<Arc<AppState>>,
     Json(req): Json<NotifyRequest>,
 ) -> Result<Json<NotifyResponse>, (StatusCode, String)> {
     let n = &req.notification;
-    let mut rejected = Vec::new();
-    let mut transient = 0usize;
 
     tracing::debug!(
         devices = n.devices.len(),
@@ -70,73 +80,22 @@ async fn notify(
         "notify received"
     );
 
-    for device in &n.devices {
-        match state.providers.get(&device.app_id) {
-            Some(provider) => {
-                // Retry suppression, keyed per device: count-only
-                // notifications (no event_id) are idempotent per the spec
-                // and always pass. Suppressed is still a success, never a
-                // rejection -- the pushkey is perfectly valid.
-                if let Some(event_id) = &n.event_id
-                    && state
-                        .dedup
-                        .is_duplicate(event_id, &device.app_id, &device.pushkey)
-                {
-                    tracing::debug!(
-                        app_id = %device.app_id,
-                        pushkey = %device.pushkey,
-                        event_id = %event_id,
-                        "duplicate notification suppressed"
-                    );
-                    continue;
-                }
-                match provider.deliver(n, device).await {
-                    Outcome::Delivered => {
-                        // The push service accepted the notification --
-                        // whether the device shows it is now between the
-                        // service and the app.
-                        tracing::info!(
-                            app_id = %device.app_id,
-                            pushkey = %device.pushkey,
-                            event_id = n.event_id.as_deref().unwrap_or("-"),
-                            "delivered"
-                        );
-                        if let Some(event_id) = &n.event_id {
-                            state
-                                .dedup
-                                .record(event_id, &device.app_id, &device.pushkey);
-                        }
-                    }
-                    Outcome::Rejected => {
-                        tracing::info!(
-                            app_id = %device.app_id,
-                            pushkey = %device.pushkey,
-                            "pushkey invalid, rejecting"
-                        );
-                        rejected.push(device.pushkey.clone());
-                    }
-                    Outcome::Skipped => {}
-                    Outcome::Transient(e) => {
-                        tracing::warn!(
-                            app_id = %device.app_id,
-                            pushkey = %device.pushkey,
-                            error = %e,
-                            "transient delivery failure"
-                        );
-                        transient += 1;
-                    }
-                }
-            }
-            None if state.config.reject_unknown_apps => {
-                tracing::info!(app_id = %device.app_id, "unknown app_id, rejecting pushkey");
-                rejected.push(device.pushkey.clone());
-            }
-            None => {
-                tracing::warn!(app_id = %device.app_id, "unknown app_id, skipping device");
-            }
+    let dispositions = futures::future::join_all(
+        n.devices
+            .iter()
+            .map(|device| deliver_one(&state, n, device)),
+    )
+    .await;
+
+    let mut rejected = Vec::new();
+    let mut transient = 0usize;
+    for d in dispositions {
+        match d {
+            Disposition::Fine => {}
+            Disposition::Reject(pushkey) => rejected.push(pushkey),
+            Disposition::Transient => transient += 1,
         }
     }
-
     if transient > 0 {
         return Err((
             StatusCode::BAD_GATEWAY,
@@ -144,6 +103,77 @@ async fn notify(
         ));
     }
     Ok(Json(NotifyResponse { rejected }))
+}
+
+/// The full pipeline for one device: provider lookup, duplicate
+/// suppression, delivery, outcome logging.
+async fn deliver_one(
+    state: &AppState,
+    n: &crate::api::Notification,
+    device: &crate::api::Device,
+) -> Disposition {
+    let Some(provider) = state.providers.get(&device.app_id) else {
+        if state.config.reject_unknown_apps {
+            tracing::info!(app_id = %device.app_id, "unknown app_id, rejecting pushkey");
+            return Disposition::Reject(device.pushkey.clone());
+        }
+        tracing::warn!(app_id = %device.app_id, "unknown app_id, skipping device");
+        return Disposition::Fine;
+    };
+
+    // Retry suppression, keyed per device: count-only notifications (no
+    // event_id) are idempotent per the spec and always pass. Suppressed is
+    // still a success, never a rejection -- the pushkey is perfectly valid.
+    if let Some(event_id) = &n.event_id
+        && state
+            .dedup
+            .is_duplicate(event_id, &device.app_id, &device.pushkey)
+    {
+        tracing::debug!(
+            app_id = %device.app_id,
+            pushkey = %device.pushkey,
+            event_id = %event_id,
+            "duplicate notification suppressed"
+        );
+        return Disposition::Fine;
+    }
+
+    match provider.deliver(n, device).await {
+        Outcome::Delivered => {
+            // The push service accepted the notification -- whether the
+            // device shows it is now between the service and the app.
+            tracing::info!(
+                app_id = %device.app_id,
+                pushkey = %device.pushkey,
+                event_id = n.event_id.as_deref().unwrap_or("-"),
+                "delivered"
+            );
+            if let Some(event_id) = &n.event_id {
+                state
+                    .dedup
+                    .record(event_id, &device.app_id, &device.pushkey);
+            }
+            Disposition::Fine
+        }
+        Outcome::Rejected => {
+            tracing::info!(
+                app_id = %device.app_id,
+                pushkey = %device.pushkey,
+                "pushkey invalid, rejecting"
+            );
+            Disposition::Reject(device.pushkey.clone())
+        }
+        Outcome::Skipped => Disposition::Fine,
+        Outcome::Transient(e) => {
+            tracing::warn!(
+                app_id = %device.app_id,
+                pushkey = %device.pushkey,
+                error = %e,
+                "transient delivery failure"
+            );
+            Disposition::Transient
+        }
+    }
 }
 
 #[cfg(test)]
