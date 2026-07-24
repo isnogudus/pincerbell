@@ -1,5 +1,9 @@
 # pincerbell
 
+[![CI](https://github.com/isnogudus/pincerbell/actions/workflows/ci.yml/badge.svg)](https://github.com/isnogudus/pincerbell/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/pincerbell.svg)](https://crates.io/crates/pincerbell)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An independent Matrix Push Gateway implementation in Rust.
 
 `pincerbell` implements the [Matrix Push Gateway API](https://spec.matrix.org/latest/push-gateway-api/)
