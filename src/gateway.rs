@@ -63,6 +63,13 @@ async fn notify(
     let mut rejected = Vec::new();
     let mut transient = 0usize;
 
+    tracing::debug!(
+        devices = n.devices.len(),
+        event_id = n.event_id.as_deref().unwrap_or("-"),
+        room_id = n.room_id.as_deref().unwrap_or("-"),
+        "notify received"
+    );
+
     for device in &n.devices {
         match state.providers.get(&device.app_id) {
             Some(provider) => {
@@ -85,6 +92,15 @@ async fn notify(
                 }
                 match provider.deliver(n, device).await {
                     Outcome::Delivered => {
+                        // The push service accepted the notification --
+                        // whether the device shows it is now between the
+                        // service and the app.
+                        tracing::info!(
+                            app_id = %device.app_id,
+                            pushkey = %device.pushkey,
+                            event_id = n.event_id.as_deref().unwrap_or("-"),
+                            "delivered"
+                        );
                         if let Some(event_id) = &n.event_id {
                             state
                                 .dedup
