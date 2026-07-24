@@ -1,0 +1,11 @@
+[package]
+name = "pincerbell"
+version = "0.1.0"
+edition = "2024"
+description = "An independent Matrix Push Gateway implementation in Rust"
+license = "MIT"
+repository = "https://github.com/isnogudus/pincerbell"
+keywords = ["matrix", "push", "notifications"]
+categories = ["network-programming"]
+
+[dependencies]
