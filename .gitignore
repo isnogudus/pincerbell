@@ -8,3 +8,8 @@
 /compose.yml
 *.p8
 *service-account*.json
+
+# The service key directory mounted into the container: everything in it is
+# a credential, only the explanatory README is tracked.
+/keys/*
+!/keys/README.md

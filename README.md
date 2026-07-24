@@ -46,17 +46,24 @@ A multi-stage [`Dockerfile`](Dockerfile) builds a static musl binary into a
 bare Alpine image (TLS roots are compiled in, so the runtime stage needs no
 extra packages). Configuration is a mounted TOML — it **must** set
 `listen = "0.0.0.0:8300"`, since the built-in localhost default is
-unreachable from outside the container; FCM service-account / APNs .p8 key
-files are mounted next to it.
+unreachable from outside the container.
+
+Credential files (APNs `.p8` signing keys, FCM service-account JSONs) go
+into the [`keys/`](keys/README.md) service directory, which compose mounts
+read-only at `/etc/pincerbell/keys` — config entries reference them as
+`/etc/pincerbell/keys/<file>`. Everything in `keys/` is gitignored and
+excluded from the image; credentials reach the container only through the
+volume mount.
 
 [`compose.yml.example`](compose.yml.example) shows the setup: copy it to
-`compose.yaml` (gitignored, like `pincerbell.toml` and any key files — real
-credentials never land in the repo), join the homeserver's Docker network,
-and point the pusher URL at `http://pincerbell:8300/_matrix/push/v1/notify`.
+`compose.yaml` (gitignored, like `pincerbell.toml` — real settings never
+land in the repo), join the homeserver's Docker network, and point the
+pusher URL at `http://pincerbell:8300/_matrix/push/v1/notify`.
 
 ```sh
 cp compose.yml.example compose.yaml
 cp pincerbell.toml.example pincerbell.toml   # set listen, add your apps
+cp ~/Downloads/AuthKey_ABC123DEFG.p8 keys/   # whatever your apps reference
 docker compose up --build
 ```
 

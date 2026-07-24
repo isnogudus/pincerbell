@@ -4,6 +4,8 @@
 #
 #   cp compose.yml.example compose.yaml
 #   cp pincerbell.toml.example pincerbell.toml   # set listen = "0.0.0.0:8300"!
+#   cp ~/Downloads/AuthKey_ABC123DEFG.p8 keys/   # APNs .p8, FCM service
+#                                                # accounts, ... (gitignored)
 #   docker compose up --build
 #
 # The service joins the external "matrix" network below so a dockerized
@@ -27,9 +29,10 @@ services:
       # The config must set listen = "0.0.0.0:8300" (the built-in default
       # binds 127.0.0.1, unreachable from outside the container).
       - ./pincerbell.toml:/etc/pincerbell/pincerbell.toml:ro
-      # Key files referenced from the config, mounted next to it:
-      # - ./service-account.json:/etc/pincerbell/service-account.json:ro
-      # - ./AuthKey_ABC123DEFG.p8:/etc/pincerbell/AuthKey_ABC123DEFG.p8:ro
+      # The service key directory: drop APNs .p8 keys, FCM service-account
+      # JSONs etc. into ./keys (gitignored) and reference them from the
+      # config as /etc/pincerbell/keys/<file>.
+      - ./keys:/etc/pincerbell/keys:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8300/health"]
       interval: 30s

@@ -39,7 +39,7 @@
 #
 #[apps."org.example.androidapp"]
 #kind = "fcm"
-#service_account_file = "/etc/pincerbell/service-account.json"
+#service_account_file = "/etc/pincerbell/keys/service-account.json"
 ## project_id defaults to the service account's own; override if they differ:
 #project_id = "my-project"
 ## API endpoint override (tests/proxies): defaults to https://fcm.googleapis.com
@@ -54,7 +54,7 @@
 #
 #[apps."org.example.iosapp"]
 #kind = "apns"
-#key_file = "/etc/pincerbell/AuthKey_ABC123DEFG.p8"
+#key_file = "/etc/pincerbell/keys/AuthKey_ABC123DEFG.p8"
 #key_id   = "ABC123DEFG"          # Apple key ID of the .p8 key
 #team_id  = "TEAM123456"          # Apple developer team ID
 #topic    = "org.example.iosapp"  # the app's bundle ID (apns-topic)

@@ -5,6 +5,7 @@ compose.yaml
 compose.yml.example
 pincerbell.toml
 pincerbell.toml.example
+keys
 *.p8
 *service-account*.json
 README.md
