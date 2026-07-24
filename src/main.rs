@@ -10,6 +10,7 @@ mod dedup;
 mod fcm;
 mod gateway;
 mod provider;
+mod webpush;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

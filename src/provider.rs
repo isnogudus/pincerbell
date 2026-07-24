@@ -4,6 +4,7 @@ use crate::api::{Device, Notification};
 use crate::apns::{ApnsApp, ApnsSettings};
 use crate::config::AppConfig;
 use crate::fcm::FcmApp;
+use crate::webpush::{WebPushApp, WebPushSettings};
 
 /// One constructed delivery backend per configured app.
 pub enum Provider {
@@ -14,6 +15,8 @@ pub enum Provider {
     Fcm(Box<FcmApp>),
     /// Apple Push Notification service, HTTP/2 provider API.
     Apns(Box<ApnsApp>),
+    /// Web Push (RFC 8030/8291/8292) with VAPID.
+    Webpush(Box<WebPushApp>),
 }
 
 /// What became of one device's delivery.
@@ -64,6 +67,17 @@ impl Provider {
                 sound: sound.clone(),
                 push_type: *push_type,
             })?))),
+            AppConfig::Webpush {
+                vapid_private_key,
+                vapid_contact_email,
+                allowed_endpoints,
+            } => Ok(Provider::Webpush(Box::new(WebPushApp::new(
+                WebPushSettings {
+                    vapid_private_key: vapid_private_key.clone(),
+                    vapid_contact_email: vapid_contact_email.clone(),
+                    allowed_endpoints: allowed_endpoints.clone(),
+                },
+            )?))),
         }
     }
 
@@ -84,6 +98,7 @@ impl Provider {
             }
             Provider::Fcm(app) => app.deliver(n, device).await,
             Provider::Apns(app) => app.deliver(n, device).await,
+            Provider::Webpush(app) => app.deliver(n, device).await,
         }
     }
 }

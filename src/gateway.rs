@@ -553,6 +553,187 @@ tLxJR74/6WyQh19rA/hKULwq
         assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
 
+    // --- WebPush end-to-end against a mock push service ---
+
+    /// Captured (headers of interest, raw body) pairs.
+    type PushCaptured = Arc<std::sync::Mutex<Vec<(serde_json::Value, Vec<u8>)>>>;
+
+    /// Mock push service: /sub-ok accepts (201), /sub-gone answers 410.
+    async fn spawn_mock_pushservice() -> (String, PushCaptured) {
+        use axum::response::IntoResponse;
+
+        let captured: PushCaptured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cap = captured.clone();
+        let handler = move |axum::extract::Path(sub): axum::extract::Path<String>,
+                            headers: axum::http::HeaderMap,
+                            body: axum::body::Bytes| {
+            let cap = cap.clone();
+            async move {
+                let h = |name: &str| {
+                    headers
+                        .get(name)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_owned()
+                };
+                let meta = serde_json::json!({
+                    "authorization": h("authorization"),
+                    "content-encoding": h("content-encoding"),
+                    "ttl": h("ttl"),
+                    "urgency": h("urgency"),
+                });
+                cap.lock().unwrap().push((meta, body.to_vec()));
+                match sub.as_str() {
+                    "sub-gone" => StatusCode::GONE.into_response(),
+                    _ => StatusCode::CREATED.into_response(),
+                }
+            }
+        };
+        let app = Router::new().route("/push/{sub}", axum::routing::post(handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// Builds a router with one webpush app; the VAPID key reuses the APNs
+    /// test key (both are P-256).
+    async fn webpush_router() -> Router {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key_path = std::env::temp_dir().join(format!(
+            "pincerbell-test-vapid-{}-{seq}.pem",
+            std::process::id()
+        ));
+        std::fs::write(&key_path, crate::apns::tests::TEST_EC_KEY).unwrap();
+        let config: Config = ::toml::from_str(&format!(
+            r#"
+            [apps."org.example.web"]
+            kind = "webpush"
+            vapid_private_key = {key_path:?}
+            vapid_contact_email = "admin@example.test"
+            allowed_endpoints = ["127.0.0.1"]
+            "#,
+            key_path = key_path.display().to_string(),
+        ))
+        .unwrap();
+        let router = router(Arc::new(AppState::new(config).unwrap()));
+        std::fs::remove_file(key_path).ok();
+        router
+    }
+
+    fn webpush_device(endpoint: &str, ua_public: &[u8], auth: &[u8]) -> serde_json::Value {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        serde_json::json!({
+            "app_id": "org.example.web",
+            "pushkey": b64.encode(ua_public),
+            "data": { "endpoint": endpoint, "auth": b64.encode(auth) },
+        })
+    }
+
+    #[tokio::test]
+    async fn webpush_delivers_encrypted_and_subscriber_can_decrypt() {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+
+        let (root, captured) = spawn_mock_pushservice().await;
+        let r = webpush_router().await;
+
+        let ua_secret = p256::SecretKey::random(&mut rand_core::OsRng);
+        let ua_public = ua_secret.public_key().to_encoded_point(false);
+        let auth = b"0123456789abcdef";
+
+        let body = serde_json::json!({
+            "notification": {
+                "event_id": "$event1:example.test",
+                "room_id": "!room:example.test",
+                "sender": "@alice:example.test",
+                "counts": { "unread": 5 },
+                "content": { "body": "must not be forwarded" },
+                "devices": [
+                    webpush_device(&format!("{root}/push/sub-ok"), ua_public.as_bytes(), auth),
+                ],
+            }
+        });
+        let (status, json) = notify_call(r, body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!([]));
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        let (meta, raw) = &captured[0];
+        let authz = meta["authorization"].as_str().unwrap();
+        assert!(authz.starts_with("vapid t="), "VAPID scheme: {authz}");
+        assert!(authz.contains(", k="), "VAPID public key: {authz}");
+        assert_eq!(meta["content-encoding"], "aes128gcm");
+        assert_eq!(meta["ttl"], "86400");
+        assert_eq!(meta["urgency"], "high");
+
+        // The subscriber (and only it) can decrypt; metadata inside, no
+        // event content.
+        let plaintext = crate::webpush::tests::decrypt(raw, &ua_secret, auth);
+        let payload: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(payload["event_id"], "$event1:example.test");
+        assert_eq!(payload["unread"], 5);
+        assert!(payload.get("content").is_none());
+    }
+
+    #[tokio::test]
+    async fn webpush_gone_subscription_is_rejected() {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+
+        let (root, _captured) = spawn_mock_pushservice().await;
+        let r = webpush_router().await;
+
+        let ua_secret = p256::SecretKey::random(&mut rand_core::OsRng);
+        let ua_public = ua_secret.public_key().to_encoded_point(false);
+        let device = webpush_device(
+            &format!("{root}/push/sub-gone"),
+            ua_public.as_bytes(),
+            b"0123456789abcdef",
+        );
+        let pushkey = device["pushkey"].clone();
+
+        let body = serde_json::json!({
+            "notification": {
+                "event_id": "$event2:example.test",
+                "room_id": "!room:example.test",
+                "devices": [device],
+            }
+        });
+        let (status, json) = notify_call(r, body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!([pushkey]));
+    }
+
+    #[tokio::test]
+    async fn webpush_disallowed_endpoint_is_never_contacted() {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+
+        let (_root, captured) = spawn_mock_pushservice().await;
+        let r = webpush_router().await;
+
+        let ua_secret = p256::SecretKey::random(&mut rand_core::OsRng);
+        let ua_public = ua_secret.public_key().to_encoded_point(false);
+        let body = serde_json::json!({
+            "notification": {
+                "event_id": "$event3:example.test",
+                "room_id": "!room:example.test",
+                "devices": [
+                    webpush_device("https://internal.example.test/push/x", ua_public.as_bytes(), b"0123456789abcdef"),
+                ],
+            }
+        });
+        let (status, json) = notify_call(r, body).await;
+        // Skipped, not rejected -- an allowlist gap must not delete pushers.
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!([]));
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "endpoint must never be contacted"
+        );
+    }
+
     #[tokio::test]
     async fn apns_voip_app_sends_voip_type_at_full_priority() {
         let (api_root, captured) = spawn_mock_apns().await;

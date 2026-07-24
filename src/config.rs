@@ -101,6 +101,19 @@ pub enum AppConfig {
         #[serde(default)]
         push_type: ApnsPushType,
     },
+    /// Web Push (RFC 8030/8291/8292) for browser subscriptions, authorized
+    /// via VAPID.
+    Webpush {
+        /// P-256 VAPID private key, PEM (PKCS#8 or SEC1).
+        vapid_private_key: std::path::PathBuf,
+        /// Contact address for the VAPID `sub` claim (sent as mailto:).
+        vapid_contact_email: String,
+        /// Mandatory allowlist of push-service hosts ("host" exact,
+        /// "*.host" for subdomains). Subscription endpoints are
+        /// client-controlled; without this gate the gateway would POST to
+        /// arbitrary URLs (SSRF).
+        allowed_endpoints: Vec<String>,
+    },
 }
 
 /// The apns-push-type an APNs app sends with.

@@ -10,21 +10,28 @@ port of, based on, or affiliated with any other Push Gateway implementation
 the Matrix.org Foundation.
 
 **Status:** early stage. The `POST /_matrix/push/v1/notify` endpoint is
-implemented with duplicate suppression for homeserver retries and three
+implemented with duplicate suppression for homeserver retries and four
 delivery backends: **FCM** (Firebase Cloud Messaging, HTTP v1 API, via a
 Google service account), **APNs** (Apple Push Notification service, HTTP/2
-provider API, token-based auth via a .p8 key), and a **log sink** for
-development and testing.
+provider API, token-based auth via a .p8 key, alert and PushKit VoIP push
+types), **Web Push** (RFC 8030 with VAPID authorization per RFC 8292 and
+RFC 8291 payload encryption — verified against the RFC's own test vector),
+and a **log sink** for development and testing.
 
 Pushes never carry the event content — only notification metadata
 (event_id, room_id, type, sender, ...); the client app fetches the event
 itself. On FCM that means data-only messages; on APNs an alert with
 `mutable-content: 1` whose fallback text the app's notification service
 extension replaces after fetching the event (count-only notifications
-become badge-only updates). A pushkey is only reported as rejected on FCM
-`UNREGISTERED` / APNs `Unregistered`; transient errors fail the request
-with 502 so the homeserver retries (already-delivered devices are shielded
-by the duplicate suppression).
+become badge-only updates); on Web Push the metadata is the encrypted
+JSON payload. A pushkey is only reported as rejected on FCM
+`UNREGISTERED` / APNs `Unregistered` / Web Push 404/410; transient errors
+fail the request with 502 so the homeserver retries (already-delivered
+devices are shielded by the duplicate suppression).
+
+Web Push subscription endpoints are client-controlled, so the `webpush`
+app type requires an explicit `allowed_endpoints` allowlist of push-service
+hosts — without it the gateway would be an SSRF proxy.
 
 ## Running
 

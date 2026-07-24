@@ -66,3 +66,24 @@
 ##                                # full priority, no alert/badge (CallKit
 ##                                # handles the UI); topic must then be the
 ##                                # app's VoIP topic (<bundle id>.voip)
+
+# kind = "webpush" delivers to browser push subscriptions (RFC 8030) with
+# VAPID authorization (RFC 8292) and end-to-end payload encryption
+# (RFC 8291, aes128gcm). The pushkey is the subscription's p256dh public
+# key; the pusher data must carry "endpoint" and "auth". The encrypted
+# payload holds the notification metadata as JSON -- never event content.
+#
+# allowed_endpoints is MANDATORY: subscription endpoints are
+# client-controlled, and without this allowlist the gateway would POST to
+# arbitrary URLs (SSRF). "host" matches exactly, "*.host" any subdomain.
+#
+#[apps."org.example.webapp"]
+#kind = "webpush"
+#vapid_private_key = "/etc/pincerbell/keys/vapid_private.pem"  # P-256, PEM
+#vapid_contact_email = "admin@example.org"
+#allowed_endpoints = [
+#  "fcm.googleapis.com",
+#  "updates.push.services.mozilla.com",
+#  "*.push.apple.com",
+#  "*.notify.windows.com",
+#]
