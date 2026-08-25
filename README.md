@@ -20,7 +20,10 @@ Google service account), **APNs** (Apple Push Notification service, HTTP/2
 provider API, token-based auth via a .p8 key, alert and PushKit VoIP push
 types), **Web Push** (RFC 8030 with VAPID authorization per RFC 8292 and
 RFC 8291 payload encryption — verified against the RFC's own test vector),
-and a **log sink** for development and testing.
+and a **log sink** for development and testing. For deployments where the
+homeserver-facing system cannot reach the push services, a [queue/poll
+relay](#queuepoll-relay) splits the gateway into a buffering edge instance
+and a delivering instance that fetches over HTTPS long-poll.
 
 Pushes never carry the event content — only notification metadata
 (event_id, room_id, type, sender, ...); the client app fetches the event
@@ -37,6 +40,38 @@ Web Push subscription endpoints are client-controlled, so the `webpush`
 app type requires an explicit `allowed_endpoints` allowlist of push-service
 hosts — without it the gateway would be an SSRF proxy.
 
+## Queue/poll relay
+
+When the system the homeserver can reach and the system that can reach the
+push services are not the same (restricted hosting, egress-only networks),
+pincerbell can split into two instances of the same binary:
+
+- **Queue side**, next to the homeserver: accepts `/notify` as usual but
+  holds notifications in a bounded in-memory ring buffer (`[queue]` in the
+  config). It needs no route to any push service. Every app_id without an
+  explicit `[apps]` entry is queued — the app list lives on the poll side
+  only.
+- **Poll side**, on the delivering network: fetches entries outbound via
+  HTTPS long-poll (`POST /_pincerbell/v1/poll`, one `[[poll]]` table per
+  upstream — one poll side can serve several queue sides), delivers them
+  through its configured apps, and acknowledges (`/_pincerbell/v1/ack`).
+  It needs no inbound port.
+
+Both sides authenticate with a shared bearer token from a file in `keys/`.
+Semantics are at-least-once: unacknowledged entries redeliver after a lease
+timeout, and the poll side's duplicate suppression absorbs the repeats.
+Count-only notifications coalesce per device to the newest badge state.
+Event content never crosses the relay (it is stripped before queueing, like
+it is stripped from every push). Pushkeys a push service declares invalid
+are reported back with the ack; the queue side answers `rejected` to the
+homeserver's next notify for them — delayed by one round-trip, which is as
+early as the push-gateway API allows.
+
+The buffer is deliberately not persistent: pushes are wake-up signals
+without content, clients resync on next open, so a restart merely costs a
+wake-up. Put a TLS-terminating reverse proxy in front of the queue side; the
+poll side speaks HTTPS natively.
+
 ## Running
 
 ```sh
@@ -48,8 +83,10 @@ The config file lists the apps the gateway delivers for, one
 `[apps."<app_id>"]` table each. Notifications for unconfigured app_ids are
 logged and skipped by default; set `reject_unknown_apps = true` to reject
 their pushkeys instead (which makes homeservers delete those pushers, so
-enable it only once the app list is complete). Message content is never
-written to the log — metadata only.
+enable it only once the app list is complete). In queue mode (`[queue]`
+configured) unconfigured app_ids are queued for the poll side instead, and
+`reject_unknown_apps` has no effect — only the poll side knows the real app
+list. Message content is never written to the log — metadata only.
 
 ## Docker
 

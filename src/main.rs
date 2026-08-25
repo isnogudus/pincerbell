@@ -9,7 +9,9 @@ mod config;
 mod dedup;
 mod fcm;
 mod gateway;
+mod poller;
 mod provider;
+mod queue;
 mod webpush;
 
 use std::path::PathBuf;
@@ -70,9 +72,20 @@ async fn main() -> ExitCode {
         listen = %config.listen,
         apps = config.apps.len(),
         reject_unknown_apps = config.reject_unknown_apps,
+        queue = config.queue.is_some(),
+        poll_upstreams = config.poll.len(),
         "starting pincerbell {}",
         env!("CARGO_PKG_VERSION"),
     );
+
+    let upstreams: Vec<poller::Upstream> =
+        match config.poll.iter().map(poller::Upstream::load).collect() {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::error!("config: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     let listen = config.listen.clone();
     let state = match AppState::new(config) {
@@ -82,7 +95,11 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let app = gateway::router(Arc::new(state));
+    let state = Arc::new(state);
+    for up in upstreams {
+        tokio::spawn(poller::run(state.clone(), up));
+    }
+    let app = gateway::router(state);
     let listener = match tokio::net::TcpListener::bind(&listen).await {
         Ok(l) => l,
         Err(e) => {

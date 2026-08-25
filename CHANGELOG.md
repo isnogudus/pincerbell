@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Queue/poll relay for split deployments where the homeserver-facing system
+  cannot reach the push services: a queue-side instance (`[queue]`) buffers
+  notifications in a bounded in-memory ring buffer and serves them over
+  HTTPS long-poll (`/_pincerbell/v1/poll` + `/_pincerbell/v1/ack`, shared
+  bearer token); a poll-side instance (`[[poll]]`, several upstreams
+  supported) fetches outbound and delivers via its configured apps.
+  - The app list lives on the poll side only: with `[queue]` configured,
+    every app_id without an explicit `[apps]` entry is queued (explicit
+    entries still deliver directly) and `reject_unknown_apps` has no
+    effect on the queue side.
+  - At-least-once via lease/ack — un-acknowledged entries redeliver after
+    the lease expires, the existing duplicate suppression absorbs the
+    repeats; transient poll-side failures simply leave the entry unacked.
+  - Count-only notifications coalesce per device to the newest badge
+    state; event content never crosses the relay.
+  - Invalid pushkeys reported by the poll side answer `rejected` on the
+    homeserver's *next* notify — one delivery attempt later, the earliest
+    the push-gateway API allows.
+  - The buffer is deliberately in-memory and non-persistent: pushes are
+    contentless wake-up signals, clients resync on next open, and a
+    restart merely costs a wake-up.
+
 ## [0.1.0] - 2026-07-24
 
 First release. An independent Matrix Push Gateway, implemented from scratch

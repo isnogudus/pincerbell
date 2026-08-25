@@ -36,6 +36,96 @@ pub struct Config {
     /// Apps this gateway delivers for, keyed by app_id.
     #[serde(default)]
     pub apps: HashMap<String, AppConfig>,
+
+    /// Queue mode: hold notifications for a remote poll-side instance to
+    /// fetch over HTTPS long-poll, instead of delivering them here. When
+    /// set, the queue becomes the fallback for every app_id without an
+    /// explicit `[apps]` entry (explicit entries still deliver directly),
+    /// and `reject_unknown_apps` has no effect -- only the poll side knows
+    /// which apps exist.
+    #[serde(default)]
+    pub queue: Option<QueueConfig>,
+
+    /// Poll mode: upstream queue-side instances this gateway long-polls for
+    /// notifications, `[[poll]]` table each. Delivery then uses the `[apps]`
+    /// entries configured here.
+    #[serde(default)]
+    pub poll: Vec<PollUpstream>,
+}
+
+/// The `[queue]` table: queue-side settings.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueueConfig {
+    /// File holding the shared bearer token the poll side authenticates
+    /// with (whitespace-trimmed). Lives in the keys/ service directory like
+    /// the other credentials.
+    pub auth_token_file: std::path::PathBuf,
+
+    /// Ring-buffer capacity; oldest entries are evicted first once reached.
+    /// Entries are metadata-only (a few hundred bytes each), so the default
+    /// tops out around 128 MB while buffering hours of a poll-side outage.
+    #[serde(default = "default_queue_max_entries")]
+    pub max_entries: usize,
+
+    /// Entries older than this are dropped undelivered -- a push this stale
+    /// is worthless, the client resyncs on next open anyway.
+    #[serde(default = "default_queue_entry_ttl_secs")]
+    pub entry_ttl_secs: u64,
+
+    /// How long a polled entry stays leased before an unacknowledged
+    /// delivery is handed out again (at-least-once).
+    #[serde(default = "default_queue_lease_secs")]
+    pub lease_secs: u64,
+
+    /// How long a pushkey reported invalid by the poll side keeps answering
+    /// `rejected` to the homeserver. After expiry the cycle simply repeats
+    /// on the next delivery attempt. 0 disables the feedback.
+    #[serde(default = "default_queue_rejected_ttl_secs")]
+    pub rejected_ttl_secs: u64,
+}
+
+fn default_queue_max_entries() -> usize {
+    262_144
+}
+
+fn default_queue_entry_ttl_secs() -> u64 {
+    3600
+}
+
+fn default_queue_lease_secs() -> u64 {
+    60
+}
+
+fn default_queue_rejected_ttl_secs() -> u64 {
+    21_600
+}
+
+/// One `[[poll]]` table: an upstream queue-side instance to long-poll.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PollUpstream {
+    /// Base URL of the queue-side instance, e.g. "https://push-edge.example.com".
+    pub url: String,
+
+    /// File holding the shared bearer token (whitespace-trimmed).
+    pub auth_token_file: std::path::PathBuf,
+
+    /// Long-poll hold time requested per request; the server caps at 60.
+    #[serde(default = "default_poll_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Maximum entries fetched per poll.
+    #[serde(default = "default_poll_max_batch")]
+    pub max_batch: usize,
+}
+
+fn default_poll_timeout_secs() -> u64 {
+    30
+}
+
+fn default_poll_max_batch() -> usize {
+    100
 }
 
 fn default_listen() -> String {
@@ -232,5 +322,51 @@ mod tests {
     #[test]
     fn unknown_top_level_key_is_rejected() {
         assert!(toml::from_str::<Config>("lisen = \"oops\"").is_err());
+    }
+
+    #[test]
+    fn queue_table_parses_with_defaults() {
+        let c: Config = toml::from_str(
+            r#"
+            [queue]
+            auth_token_file = "/etc/pincerbell/keys/queue-token"
+            "#,
+        )
+        .unwrap();
+        let q = c.queue.unwrap();
+        assert_eq!(
+            q.auth_token_file,
+            std::path::Path::new("/etc/pincerbell/keys/queue-token")
+        );
+        assert_eq!(q.max_entries, 262_144);
+        assert_eq!(q.entry_ttl_secs, 3600);
+        assert_eq!(q.lease_secs, 60);
+        assert_eq!(q.rejected_ttl_secs, 21_600);
+        assert!(c.poll.is_empty());
+    }
+
+    #[test]
+    fn multiple_poll_upstreams_parse() {
+        let c: Config = toml::from_str(
+            r#"
+            [[poll]]
+            url = "https://edge1.example.test"
+            auth_token_file = "/etc/pincerbell/keys/edge1-token"
+
+            [[poll]]
+            url = "https://edge2.example.test"
+            auth_token_file = "/etc/pincerbell/keys/edge2-token"
+            timeout_secs = 45
+            max_batch = 10
+            "#,
+        )
+        .unwrap();
+        assert!(c.queue.is_none());
+        assert_eq!(c.poll.len(), 2);
+        assert_eq!(c.poll[0].url, "https://edge1.example.test");
+        assert_eq!(c.poll[0].timeout_secs, 30);
+        assert_eq!(c.poll[0].max_batch, 100);
+        assert_eq!(c.poll[1].timeout_secs, 45);
+        assert_eq!(c.poll[1].max_batch, 10);
     }
 }

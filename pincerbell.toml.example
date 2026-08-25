@@ -21,6 +21,42 @@
 # list below is known-complete.
 #reject_unknown_apps = false
 
+# --- Queue/poll relay -------------------------------------------------------
+#
+# When the system the homeserver can reach and the system that can reach the
+# push services are not the same, run two pincerbell instances: one in QUEUE
+# mode next to the homeserver, one in POLL mode on the delivering network.
+# The poll side connects outbound over HTTPS long-poll; the queue side needs
+# no route to the push services and the poll side no inbound port.
+#
+# QUEUE mode (this instance holds notifications for a poll side to fetch).
+# Once [queue] is set, every app_id WITHOUT an explicit [apps] entry below
+# is queued instead of skipped/rejected -- the app list lives on the poll
+# side only, and reject_unknown_apps has no effect here. Explicit [apps]
+# entries still deliver directly. The buffer is in-memory: entries are
+# metadata-only (a few hundred bytes each), and losing them on restart just
+# costs a wake-up -- clients resync on next open anyway.
+#
+#[queue]
+#auth_token_file = "/etc/pincerbell/keys/queue-token"  # shared bearer token
+## Ring-buffer capacity, oldest evicted first (the default tops out around
+## 128 MB and buffers hours of poll-side outage):
+#max_entries = 262144
+#entry_ttl_secs = 3600     # entries older than this are dropped undelivered
+#lease_secs = 60           # unacknowledged fetches redeliver after this
+#rejected_ttl_secs = 21600 # how long a reported-invalid pushkey answers
+#                          # "rejected" to the homeserver; 0 disables
+#
+# POLL mode (this instance fetches from one or more queue sides and
+# delivers via its [apps] entries). One [[poll]] table per upstream.
+#
+#[[poll]]
+#url = "https://push-edge.example.org"  # queue side, behind its TLS proxy
+#auth_token_file = "/etc/pincerbell/keys/queue-token"
+#timeout_secs = 30         # long-poll hold per request (server caps at 60)
+#max_batch = 100           # entries fetched per poll
+# ----------------------------------------------------------------------------
+
 # One table per app this gateway delivers for, keyed by the app_id that
 # clients register their pusher with.
 #

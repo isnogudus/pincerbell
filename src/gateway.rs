@@ -13,11 +13,14 @@ use crate::api::{NotifyRequest, NotifyResponse};
 use crate::config::Config;
 use crate::dedup::DedupCache;
 use crate::provider::{Outcome, Provider};
+use crate::queue::{AckRequest, PollRequest, PollResponse, QueueState};
 
 pub struct AppState {
     pub config: Config,
     pub providers: HashMap<String, Provider>,
     pub dedup: DedupCache,
+    /// Queue mode: the fallback for devices without an explicit app entry.
+    pub queue: Option<QueueState>,
 }
 
 impl AppState {
@@ -33,10 +36,12 @@ impl AppState {
             std::time::Duration::from_secs(config.dedup_ttl_secs),
             config.dedup_max_entries,
         );
+        let queue = config.queue.as_ref().map(QueueState::new).transpose()?;
         Ok(AppState {
             config,
             providers,
             dedup,
+            queue,
         })
     }
 }
@@ -44,12 +49,14 @@ impl AppState {
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/_matrix/push/v1/notify", post(notify))
+        .route("/_pincerbell/v1/poll", post(queue_poll))
+        .route("/_pincerbell/v1/ack", post(queue_ack))
         .route("/health", get(|| async { "ok" }))
         .with_state(state)
 }
 
 /// What became of one device, after logging; only what the response needs.
-enum Disposition {
+pub(crate) enum Disposition {
     Fine,
     Reject(String),
     Transient,
@@ -106,13 +113,20 @@ async fn notify(
 }
 
 /// The full pipeline for one device: provider lookup, duplicate
-/// suppression, delivery, outcome logging.
-async fn deliver_one(
+/// suppression, delivery, outcome logging. Shared with the poll side, which
+/// runs it for every entry fetched from an upstream queue.
+pub(crate) async fn deliver_one(
     state: &AppState,
     n: &crate::api::Notification,
     device: &crate::api::Device,
 ) -> Disposition {
     let Some(provider) = state.providers.get(&device.app_id) else {
+        // Queue mode: everything without an explicit app entry is queued
+        // for the poll side, which is the only place that knows the real
+        // app list.
+        if let Some(q) = &state.queue {
+            return queue_one(state, q, n, device);
+        }
         if state.config.reject_unknown_apps {
             tracing::info!(app_id = %device.app_id, "unknown app_id, rejecting pushkey");
             return Disposition::Reject(device.pushkey.clone());
@@ -174,6 +188,112 @@ async fn deliver_one(
             Disposition::Transient
         }
     }
+}
+
+/// Queue-mode path for one device: rejected-pushkey feedback, duplicate
+/// suppression, then enqueue. Enqueued counts as delivered -- the lease
+/// mechanism owns retries from here on.
+fn queue_one(
+    state: &AppState,
+    q: &QueueState,
+    n: &crate::api::Notification,
+    device: &crate::api::Device,
+) -> Disposition {
+    // The notify response is the only channel that reaches the homeserver,
+    // so a pushkey the poll side reported invalid is answered here.
+    if q.is_rejected(&device.app_id, &device.pushkey) {
+        tracing::info!(
+            app_id = %device.app_id,
+            pushkey = %device.pushkey,
+            "pushkey reported invalid by poll side, rejecting"
+        );
+        return Disposition::Reject(device.pushkey.clone());
+    }
+    if let Some(event_id) = &n.event_id
+        && state
+            .dedup
+            .is_duplicate(event_id, &device.app_id, &device.pushkey)
+    {
+        tracing::debug!(
+            app_id = %device.app_id,
+            pushkey = %device.pushkey,
+            event_id = %event_id,
+            "duplicate notification suppressed before queueing"
+        );
+        return Disposition::Fine;
+    }
+    match q.queue.enqueue(n, device) {
+        Ok(()) => {
+            tracing::info!(
+                app_id = %device.app_id,
+                pushkey = %device.pushkey,
+                event_id = n.event_id.as_deref().unwrap_or("-"),
+                "queued for poll side"
+            );
+            if let Some(event_id) = &n.event_id {
+                state
+                    .dedup
+                    .record(event_id, &device.app_id, &device.pushkey);
+            }
+            Disposition::Fine
+        }
+        Err(e) => {
+            tracing::warn!(app_id = %device.app_id, error = %e, "enqueue failed");
+            Disposition::Transient
+        }
+    }
+}
+
+/// Extracts and checks the shared bearer token; None when the instance is
+/// not in queue mode at all.
+fn queue_auth<'a>(
+    state: &'a AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<&'a QueueState, (StatusCode, String)> {
+    let Some(q) = &state.queue else {
+        return Err((StatusCode::NOT_FOUND, "queue mode not configured".into()));
+    };
+    let authorized = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|token| q.verify_token(token));
+    if !authorized {
+        return Err((StatusCode::UNAUTHORIZED, "invalid or missing token".into()));
+    }
+    Ok(q)
+}
+
+/// `POST /_pincerbell/v1/poll` -- long-poll fetch for the poll side.
+/// Returns leased entries immediately if any are queued, otherwise holds
+/// the request up to the (capped) timeout.
+async fn queue_poll(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<PollRequest>,
+) -> Result<Json<PollResponse>, (StatusCode, String)> {
+    let q = queue_auth(&state, &headers)?;
+    // Cap the hold below typical proxy/idle timeouts.
+    let timeout = std::time::Duration::from_secs(req.timeout_secs.unwrap_or(30).min(60));
+    let max = req.max.unwrap_or(100).clamp(1, 1000);
+    let entries = q.queue.poll_wait(max, timeout).await;
+    Ok(Json(PollResponse { entries }))
+}
+
+/// `POST /_pincerbell/v1/ack` -- settles delivered entries and records
+/// pushkeys the push services declared invalid.
+async fn queue_ack(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<AckRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let q = queue_auth(&state, &headers)?;
+    q.queue.ack(&req.acked);
+    for r in &req.rejected_pushkeys {
+        tracing::info!(app_id = %r.app_id, pushkey = %r.pushkey, "poll side reported pushkey invalid");
+        q.report_rejected(&r.app_id, &r.pushkey);
+    }
+    Ok(Json(serde_json::json!({})))
 }
 
 #[cfg(test)]
@@ -264,6 +384,170 @@ mod tests {
             .unwrap();
         let resp = r.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // --- queue mode ---
+
+    /// Router in queue mode (token "test-token"), optionally with extra
+    /// config appended (e.g. an explicit app entry).
+    fn queue_router(extra_toml: &str) -> Router {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let token_path = std::env::temp_dir().join(format!(
+            "pincerbell-test-qgw-token-{}-{seq}",
+            std::process::id()
+        ));
+        std::fs::write(&token_path, "test-token\n").unwrap();
+        let config: Config = ::toml::from_str(&format!(
+            r#"
+            [queue]
+            auth_token_file = {token_path:?}
+
+            {extra_toml}
+            "#,
+            token_path = token_path.display().to_string(),
+        ))
+        .unwrap();
+        let router = router(Arc::new(AppState::new(config).unwrap()));
+        std::fs::remove_file(token_path).ok();
+        router
+    }
+
+    /// Calls a /_pincerbell endpoint with a bearer token.
+    async fn pincerbell_call(
+        router: Router,
+        path: &str,
+        token: Option<&str>,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let resp = router
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// A zero-timeout poll: returns whatever is queued right now.
+    async fn poll_now(router: Router, token: Option<&str>) -> (StatusCode, serde_json::Value) {
+        pincerbell_call(
+            router,
+            "/_pincerbell/v1/poll",
+            token,
+            serde_json::json!({"timeout_secs": 0}),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn queue_mode_queues_and_strips_content() {
+        let r = queue_router("");
+        let body = serde_json::json!({
+            "notification": {
+                "event_id": "$event1:example.test",
+                "room_id": "!room:example.test",
+                "content": { "body": "must not cross the relay" },
+                "counts": { "unread": 1 },
+                "devices": [{ "app_id": "org.example.app", "pushkey": "pk-1" }]
+            }
+        });
+        let (status, json) = notify_call(r.clone(), body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!([]));
+
+        let (status, json) = poll_now(r, Some("test-token")).await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = json["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let n = &entries[0]["notification"];
+        assert_eq!(n["event_id"], "$event1:example.test");
+        assert_eq!(n["devices"][0]["pushkey"], "pk-1");
+        assert!(
+            n.get("content").is_none(),
+            "content must not cross the relay"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_endpoints_require_the_token() {
+        let r = queue_router("");
+        let (status, _) = poll_now(r.clone(), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = poll_now(r.clone(), Some("wrong")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = pincerbell_call(
+            r,
+            "/_pincerbell/v1/ack",
+            Some("wrong"),
+            serde_json::json!({"acked": []}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn queue_endpoints_404_without_queue_mode() {
+        let r = test_router("");
+        let (status, _) = poll_now(r, Some("test-token")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn reported_rejection_answers_the_next_notify() {
+        let r = queue_router("");
+        let (status, _) = pincerbell_call(
+            r.clone(),
+            "/_pincerbell/v1/ack",
+            Some("test-token"),
+            serde_json::json!({
+                "acked": [],
+                "rejected_pushkeys": [{"app_id": "org.example.app", "pushkey": "pk-dead"}],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, json) =
+            notify_call(r.clone(), notification("org.example.app", "pk-dead")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!(["pk-dead"]));
+
+        // ... and nothing was queued for the dead pushkey.
+        let (_, json) = poll_now(r, Some("test-token")).await;
+        assert_eq!(json["entries"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn explicit_app_wins_over_the_queue() {
+        let r = queue_router("[apps.\"org.example.local\"]\nkind = \"log\"");
+        let (status, json) =
+            notify_call(r.clone(), notification("org.example.local", "pk-1")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rejected"], serde_json::json!([]));
+        // Log-delivered directly, not queued.
+        let (_, json) = poll_now(r, Some("test-token")).await;
+        assert_eq!(json["entries"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn homeserver_retry_queues_only_once() {
+        let r = queue_router("");
+        let body = notification("org.example.app", "pk-1");
+        let (status, _) = notify_call(r.clone(), body.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = notify_call(r.clone(), body).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, json) = poll_now(r, Some("test-token")).await;
+        assert_eq!(json["entries"].as_array().unwrap().len(), 1);
     }
 
     // --- FCM end-to-end against a mock server ---
