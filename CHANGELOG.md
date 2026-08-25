@@ -4,7 +4,10 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-25
+
+The queue/poll relay release: split deployments across networks that
+cannot reach each other directly.
 
 ### Added
 - Queue/poll relay for split deployments where the homeserver-facing system
@@ -68,4 +71,5 @@ port of any other gateway.
   `keys/` service directory for credential files (gitignored and excluded
   from the image).
 
+[0.2.0]: https://github.com/isnogudus/pincerbell/releases/tag/v0.2.0
 [0.1.0]: https://github.com/isnogudus/pincerbell/releases/tag/v0.1.0
