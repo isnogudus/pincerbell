@@ -1,0 +1,47 @@
+# pincerbell POLL-SIDE configuration -- the instance on the network that
+# can reach the push services (FCM, APNs, ...). It long-polls one or more
+# queue-side instances (see pincerbell-queue.toml.example) outbound over
+# HTTPS, delivers the fetched notifications through the [apps] below, and
+# acknowledges. No inbound port is needed.
+#
+# Copy to pincerbell.toml on the poll-side host and adjust.
+
+# Only serves /health here; keep it local.
+#listen = "127.0.0.1:8300"
+
+# The app list lives on THIS side. reject_unknown_apps works here too:
+# rejections travel back with the acknowledgements, and the queue side
+# answers "rejected" on the homeserver's next notify. Enable only once the
+# app list below is known-complete.
+#reject_unknown_apps = false
+
+# One [[poll]] table per upstream queue side; each gets its own long-poll
+# loop with reconnect backoff.
+[[poll]]
+url = "https://push-edge.example.org"   # queue side, behind its TLS proxy
+auth_token_file = "/etc/pincerbell/keys/queue-token"
+# Long-poll hold per request; the server caps at 60.
+#timeout_secs = 30
+# Entries fetched per poll.
+#max_batch = 100
+
+# A second upstream, if one poll side serves several queue sides:
+#
+#[[poll]]
+#url = "https://push-edge-2.example.org"
+#auth_token_file = "/etc/pincerbell/keys/queue2-token"
+
+# Delivery backends, exactly as in direct operation -- see
+# pincerbell.toml.example for all kinds (fcm, apns, webpush, log) and their
+# options.
+
+[apps."org.example.androidapp"]
+kind = "fcm"
+service_account_file = "/etc/pincerbell/keys/service-account.json"
+
+[apps."org.example.iosapp"]
+kind = "apns"
+key_file = "/etc/pincerbell/keys/AuthKey_ABC123DEFG.p8"
+key_id   = "ABC123DEFG"
+team_id  = "TEAM123456"
+topic    = "org.example.iosapp"

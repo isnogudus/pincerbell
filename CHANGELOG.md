@@ -28,6 +28,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - The buffer is deliberately in-memory and non-persistent: pushes are
     contentless wake-up signals, clients resync on next open, and a
     restart merely costs a wake-up.
+- Per-mode example configurations (`pincerbell.toml.example` for direct
+  operation, `pincerbell-queue.toml.example` / `pincerbell-poll.toml.example`
+  for the relay roles, all parse-checked by a test) and a worked relay
+  deployment walkthrough in `docs/queue-poll-relay.md`.
 
 ## [0.1.0] - 2026-07-24
 

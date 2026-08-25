@@ -325,6 +325,28 @@ mod tests {
     }
 
     #[test]
+    fn example_config_files_parse() {
+        for (name, check) in [
+            (
+                "pincerbell.toml.example",
+                (|c: &Config| c.queue.is_none() && c.poll.is_empty()) as fn(&Config) -> bool,
+            ),
+            ("pincerbell-queue.toml.example", |c: &Config| {
+                c.queue.is_some()
+            }),
+            ("pincerbell-poll.toml.example", |c: &Config| {
+                !c.poll.is_empty() && !c.apps.is_empty()
+            }),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let c: Config =
+                toml::from_str(&raw).unwrap_or_else(|e| panic!("{name} does not parse: {e}"));
+            assert!(check(&c), "{name} does not configure its mode");
+        }
+    }
+
+    #[test]
     fn queue_table_parses_with_defaults() {
         let c: Config = toml::from_str(
             r#"

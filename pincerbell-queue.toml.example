@@ -1,0 +1,41 @@
+# pincerbell QUEUE-SIDE configuration -- the instance next to the
+# homeserver, for split deployments where this system cannot reach the push
+# services. It accepts /notify as usual but buffers the notifications in
+# memory; a poll-side instance (see pincerbell-poll.toml.example) fetches
+# them outbound over HTTPS long-poll and delivers them.
+#
+# Copy to pincerbell.toml on the queue-side host and adjust. Put a
+# TLS-terminating reverse proxy in front: the poll side connects to
+# /_pincerbell/v1/poll and /_pincerbell/v1/ack on this instance.
+
+# Reachable for the homeserver AND (via the TLS proxy) for the poll side.
+listen = "0.0.0.0:8300"
+
+[queue]
+# Shared bearer token, same file content on both sides. Lives in the keys/
+# service directory like the other credentials.
+auth_token_file = "/etc/pincerbell/keys/queue-token"
+
+# Ring-buffer capacity, oldest evicted first. Entries are metadata-only (a
+# few hundred bytes each), so the default tops out around 128 MB while
+# buffering hours of a poll-side outage.
+#max_entries = 262144
+
+# Entries older than this are dropped undelivered -- a push this stale is
+# worthless, the client resyncs on next open anyway.
+#entry_ttl_secs = 3600
+
+# A fetched entry redelivers after this if the poll side never acknowledges
+# it (at-least-once; the poll side's duplicate suppression absorbs repeats).
+#lease_secs = 60
+
+# How long a pushkey the poll side reported invalid keeps answering
+# "rejected" to the homeserver. 0 disables the feedback.
+#rejected_ttl_secs = 21600
+
+# Everything WITHOUT an explicit [apps] entry is queued for the poll side --
+# the app list lives over there, this file needs none. An explicit entry
+# here still delivers directly (mixed operation), e.g. a local log sink:
+#
+#[apps."org.example.localtest"]
+#kind = "log"

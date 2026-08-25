@@ -72,12 +72,25 @@ without content, clients resync on next open, so a restart merely costs a
 wake-up. Put a TLS-terminating reverse proxy in front of the queue side; the
 poll side speaks HTTPS natively.
 
+[`docs/queue-poll-relay.md`](docs/queue-poll-relay.md) walks through a
+complete deployment, from token generation to verification;
+[`pincerbell-queue.toml.example`](pincerbell-queue.toml.example) and
+[`pincerbell-poll.toml.example`](pincerbell-poll.toml.example) are
+ready-to-copy configurations for the two roles.
+
 ## Running
 
 ```sh
 cp pincerbell.toml.example pincerbell.toml   # edit: listen address, apps
 cargo run
 ```
+
+Three example configurations cover the deployment modes:
+[`pincerbell.toml.example`](pincerbell.toml.example) for direct operation,
+[`pincerbell-queue.toml.example`](pincerbell-queue.toml.example) and
+[`pincerbell-poll.toml.example`](pincerbell-poll.toml.example) for the two
+halves of the [queue/poll relay](#queuepoll-relay) — each gets copied to
+`pincerbell.toml` on its host.
 
 The config file lists the apps the gateway delivers for, one
 `[apps."<app_id>"]` table each. Notifications for unconfigured app_ids are

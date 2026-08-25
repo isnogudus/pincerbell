@@ -4,7 +4,8 @@ target
 compose.yaml
 compose.yml.example
 pincerbell.toml
-pincerbell.toml.example
+pincerbell*.toml.example
+docs
 keys
 *.p8
 *service-account*.json
