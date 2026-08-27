@@ -20,8 +20,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# contents: write -- the job maintains the rolling "image-latest" release
+# (tag + tar.gz asset) besides pushing to GHCR.
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -51,3 +53,18 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      # Also publish the image as a plain tar.gz on a rolling prerelease,
+      # for hosts whose podman cannot reach any registry: fetch with
+      # curl/wget from
+      #   .../releases/download/image-latest/pincerbell-image.tar.gz
+      # then `podman load -i pincerbell-image.tar.gz`.
+      - run: |
+          docker pull ghcr.io/${{ github.repository }}:latest
+          docker save ghcr.io/${{ github.repository }}:latest | gzip > pincerbell-image.tar.gz
+      - run: |
+          gh release delete image-latest --cleanup-tag -y || true
+          gh release create image-latest pincerbell-image.tar.gz \
+            --prerelease --title "Container image (rolling)" \
+            --notes "Rolling \`podman load\`-able container image for hosts without registry access; rebuilt on every push. Built from ${{ github.sha }}."
+        env:
+          GH_TOKEN: ${{ github.token }}
