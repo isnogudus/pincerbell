@@ -11,6 +11,16 @@
 # in the URL (http://user:pass@proxy:3128). Unset: direct connections.
 #proxy = "http://proxy.internal:3128"
 
+# Extra root certificates (PEM bundle) trusted for outbound TLS on top of
+# the built-in Mozilla set -- for internal CAs and TLS-intercepting
+# proxies. Same scope and per-[[poll]] override rules as `proxy`.
+#tls_ca_file = "/etc/pincerbell/keys/internal-ca.pem"
+
+# LAST RESORT for closed test setups: disable TLS certificate verification
+# on outbound connections. Anyone on the network path can then impersonate
+# the peers -- prefer tls_ca_file. Same scope/overrides as `proxy`.
+#tls_accept_invalid_certs = false
+
 # Retry suppression: a delivered (event_id, app_id, pushkey) triple blocks
 # repeat deliveries for this many seconds -- long enough for a homeserver's
 # exponential-backoff retries, short enough that nothing accumulates. Set 0

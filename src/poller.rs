@@ -30,13 +30,13 @@ pub struct Upstream {
 }
 
 impl Upstream {
-    pub fn load(cfg: &PollUpstream, default_proxy: Option<&str>) -> Result<Upstream, String> {
-        // Per-upstream proxy wins over the top-level one; an empty string
-        // opts out of both (http_client treats it as "direct").
-        let proxy = cfg.proxy.as_deref().or(default_proxy);
+    pub fn load(
+        cfg: &PollUpstream,
+        defaults: &crate::config::HttpOptions,
+    ) -> Result<Upstream, String> {
         // No overall timeout: requests hold up to the long-poll duration;
         // poll_once bounds each request individually.
-        let client = crate::provider::http_client(proxy, None)
+        let client = crate::provider::http_client(&cfg.http_options(defaults), None)
             .map_err(|e| format!("poll {}: {e}", cfg.url))?;
         let raw = std::fs::read_to_string(&cfg.auth_token_file).map_err(|e| {
             format!(
@@ -61,9 +61,40 @@ impl Upstream {
     }
 }
 
+/// Preflight liveness probe of an upstream's /health endpoint, over the
+/// same client (proxy, TLS options) the poll loop uses. Any HTTP response
+/// proves the transport path works -- an unexpected status usually just
+/// means the upstream's reverse proxy does not route /health.
+pub async fn health_check(up: &Upstream) -> Result<reqwest::StatusCode, String> {
+    let resp = up
+        .client
+        .get(format!("{}/health", up.url))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(resp.status())
+}
+
 /// The per-upstream loop: poll, deliver, ack, forever. Connection errors
 /// back off exponentially (1s..60s) and reset on the next success.
 pub async fn run(state: Arc<AppState>, up: Upstream) {
+    // Log whether the upstream is alive before the first poll; not fatal
+    // either way, the loop below retries with backoff.
+    match health_check(&up).await {
+        Ok(status) if status.is_success() => {
+            tracing::info!(url = %up.url, "upstream health check: ok");
+        }
+        Ok(status) => tracing::warn!(
+            url = %up.url,
+            %status,
+            "upstream reachable, but /health answered unexpectedly \
+             (does its reverse proxy route /health?)"
+        ),
+        Err(e) => {
+            tracing::warn!(url = %up.url, error = %e, "upstream health check failed");
+        }
+    }
     let mut backoff = Duration::from_secs(1);
     tracing::info!(url = %up.url, "polling upstream queue");
     loop {
@@ -211,6 +242,22 @@ mod tests {
             .unwrap();
         let status = resp.status().as_u16();
         (status, resp.json().await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn health_check_reports_a_live_upstream() {
+        let url = spawn_queue_side().await;
+        let status = health_check(&upstream(&url)).await.unwrap();
+        assert!(status.is_success());
+    }
+
+    #[tokio::test]
+    async fn health_check_reports_a_dead_upstream() {
+        // Bind and drop: the port is (momentarily) unoccupied.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        health_check(&upstream(&url)).await.unwrap_err();
     }
 
     #[tokio::test]

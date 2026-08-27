@@ -62,7 +62,7 @@ pub struct ApnsSettings {
     pub default_alert_title: Option<String>,
     pub sound: Option<String>,
     pub push_type: ApnsPushType,
-    pub proxy: Option<String>,
+    pub http: crate::config::HttpOptions,
 }
 
 impl ApnsApp {
@@ -73,8 +73,7 @@ impl ApnsApp {
             .map_err(|e| format!("{}: {e}", settings.key_file.display()))?;
         let signing_key = jsonwebtoken::EncodingKey::from_ec_pem(pem.as_bytes())
             .map_err(|e| format!("{}: {e}", settings.key_file.display()))?;
-        let client =
-            crate::provider::http_client(settings.proxy.as_deref(), Some(Duration::from_secs(15)))?;
+        let client = crate::provider::http_client(&settings.http, Some(Duration::from_secs(15)))?;
         let api_root = settings.api_root.unwrap_or_else(|| {
             if settings.sandbox {
                 "https://api.sandbox.push.apple.com".to_owned()
@@ -278,7 +277,7 @@ nyE8g0es+6V9NOP7j3xz0FzBN8+hRANCAAQWQmKTghF7aFUSjmgmcbRG0xCM9O5w
             default_alert_title: None,
             sound: None,
             push_type,
-            proxy: None,
+            http: Default::default(),
         })
         .unwrap();
         std::fs::remove_file(key_path).ok();

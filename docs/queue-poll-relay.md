@@ -125,9 +125,13 @@ curl -s https://push-edge.example.org/_matrix/push/v1/notify \
 
 The queue side logs `queued for poll side`, and within moments the poll
 side logs the delivery attempt (here: an FCM error, since "test" is no real
-registration token). The poll side's startup log shows one
-`polling upstream queue` line per upstream; `/health` answers `ok` on both
-sides.
+registration token). The poll side's startup log shows, per upstream, the
+result of a one-shot `/health` preflight (`upstream health check: ok` --
+probed over the same proxy/TLS path the poll loop uses) followed by a
+`polling upstream queue` line; `/health` answers `ok` on both sides. For
+the preflight to see an `ok`, the queue side's reverse proxy must route
+`/health` too -- an unexpected-status warning there usually just means it
+does not, and only proves reachability.
 
 ## What to expect operationally
 

@@ -78,10 +78,11 @@ async fn main() -> ExitCode {
         env!("CARGO_PKG_VERSION"),
     );
 
+    let http_defaults = config.http_options();
     let upstreams: Vec<poller::Upstream> = match config
         .poll
         .iter()
-        .map(|p| poller::Upstream::load(p, config.proxy.as_deref()))
+        .map(|p| poller::Upstream::load(p, &http_defaults))
         .collect()
     {
         Ok(u) => u,

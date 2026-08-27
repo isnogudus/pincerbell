@@ -29,7 +29,7 @@ impl AppState {
     pub fn new(config: Config) -> Result<Self, String> {
         let mut providers = HashMap::new();
         for (app_id, app) in &config.apps {
-            let provider = Provider::new(app, config.proxy.as_deref())
+            let provider = Provider::new(app, &config.http_options())
                 .map_err(|e| format!("app {app_id}: {e}"))?;
             providers.insert(app_id.clone(), provider);
         }

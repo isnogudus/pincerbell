@@ -73,7 +73,7 @@ impl FcmApp {
         service_account_file: &std::path::Path,
         project_id: Option<String>,
         api_root: Option<String>,
-        proxy: Option<&str>,
+        http: &crate::config::HttpOptions,
     ) -> Result<FcmApp, String> {
         let raw = std::fs::read_to_string(service_account_file)
             .map_err(|e| format!("{}: {e}", service_account_file.display()))?;
@@ -82,7 +82,7 @@ impl FcmApp {
         let signing_key =
             jsonwebtoken::EncodingKey::from_rsa_pem(account.private_key.as_bytes())
                 .map_err(|e| format!("{}: private_key: {e}", service_account_file.display()))?;
-        let client = crate::provider::http_client(proxy, Some(Duration::from_secs(15)))?;
+        let client = crate::provider::http_client(http, Some(Duration::from_secs(15)))?;
         Ok(FcmApp {
             client,
             api_root: api_root.unwrap_or_else(|| "https://fcm.googleapis.com".to_owned()),

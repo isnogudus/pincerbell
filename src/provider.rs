@@ -8,21 +8,48 @@ use crate::config::AppConfig;
 use crate::fcm::FcmApp;
 use crate::webpush::{WebPushApp, WebPushSettings};
 
-/// Builds the reqwest client every outbound path uses, honoring an optional
-/// forward proxy. An unset or empty proxy means direct connections (an empty
-/// string is how a `[[poll]]` entry opts back out of the top-level proxy).
-/// A malformed proxy URL fails here, at startup, like the credential files.
+/// Builds the reqwest client every outbound path uses, honoring the
+/// resolved proxy/TLS options. Empty strings opt out (a `[[poll]]` entry
+/// drops an inherited top-level `proxy`/`tls_ca_file` that way). Malformed
+/// proxy URLs and unreadable CA bundles fail here, at startup, like the
+/// credential files.
 pub fn http_client(
-    proxy: Option<&str>,
+    opts: &crate::config::HttpOptions,
     timeout: Option<Duration>,
 ) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder();
     if let Some(t) = timeout {
         builder = builder.timeout(t);
     }
-    if let Some(url) = proxy.filter(|p| !p.is_empty()) {
+    if let Some(url) = opts.proxy.as_deref().filter(|p| !p.is_empty()) {
         let proxy = reqwest::Proxy::all(url).map_err(|e| format!("proxy {url}: {e}"))?;
         builder = builder.proxy(proxy);
+    }
+    if let Some(path) = opts
+        .tls_ca_file
+        .as_deref()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        let pem =
+            std::fs::read(path).map_err(|e| format!("tls_ca_file {}: {e}", path.display()))?;
+        let certs = reqwest::Certificate::from_pem_bundle(&pem)
+            .map_err(|e| format!("tls_ca_file {}: {e}", path.display()))?;
+        if certs.is_empty() {
+            return Err(format!(
+                "tls_ca_file {}: no certificates found",
+                path.display()
+            ));
+        }
+        for cert in certs {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    if opts.tls_accept_invalid_certs {
+        tracing::warn!(
+            "TLS certificate verification is DISABLED (tls_accept_invalid_certs) -- \
+             anyone on the network path can impersonate the peers"
+        );
+        builder = builder.danger_accept_invalid_certs(true);
     }
     builder.build().map_err(|e| e.to_string())
 }
@@ -55,7 +82,7 @@ pub enum Outcome {
 }
 
 impl Provider {
-    pub fn new(config: &AppConfig, proxy: Option<&str>) -> Result<Provider, String> {
+    pub fn new(config: &AppConfig, http: &crate::config::HttpOptions) -> Result<Provider, String> {
         match config {
             AppConfig::Log => Ok(Provider::Log),
             AppConfig::Fcm {
@@ -66,7 +93,7 @@ impl Provider {
                 service_account_file,
                 project_id.clone(),
                 api_root.clone(),
-                proxy,
+                http,
             )?))),
             AppConfig::Apns {
                 key_file,
@@ -88,7 +115,7 @@ impl Provider {
                 default_alert_title: default_alert_title.clone(),
                 sound: sound.clone(),
                 push_type: *push_type,
-                proxy: proxy.map(str::to_owned),
+                http: http.clone(),
             })?))),
             AppConfig::Webpush {
                 vapid_private_key,
@@ -99,7 +126,7 @@ impl Provider {
                     vapid_private_key: vapid_private_key.clone(),
                     vapid_contact_email: vapid_contact_email.clone(),
                     allowed_endpoints: allowed_endpoints.clone(),
-                    proxy: proxy.map(str::to_owned),
+                    http: http.clone(),
                 },
             )?))),
         }
@@ -124,5 +151,57 @@ impl Provider {
             Provider::Apns(app) => app.deliver(n, device).await,
             Provider::Webpush(app) => app.deliver(n, device).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::HttpOptions;
+
+    #[test]
+    fn accept_invalid_certs_and_empty_optouts_build() {
+        http_client(
+            &HttpOptions {
+                proxy: Some(String::new()),
+                tls_ca_file: Some(std::path::PathBuf::new()),
+                tls_accept_invalid_certs: true,
+            },
+            Some(Duration::from_secs(1)),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn malformed_ca_bundle_fails_at_startup() {
+        let path = std::env::temp_dir().join(format!(
+            "pincerbell-test-ca-{}-{:?}.pem",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::write(&path, "not a pem bundle").unwrap();
+        let err = http_client(
+            &HttpOptions {
+                tls_ca_file: Some(path.clone()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap_err();
+        std::fs::remove_file(&path).ok();
+        assert!(err.contains("tls_ca_file"), "{err}");
+    }
+
+    #[test]
+    fn missing_ca_file_fails_at_startup() {
+        let err = http_client(
+            &HttpOptions {
+                tls_ca_file: Some("/nonexistent/ca.pem".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("tls_ca_file"), "{err}");
     }
 }

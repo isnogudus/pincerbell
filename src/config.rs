@@ -40,6 +40,19 @@ pub struct Config {
     #[serde(default)]
     pub proxy: Option<String>,
 
+    /// Extra root certificates (PEM bundle) trusted for outbound TLS on top
+    /// of the built-in Mozilla set -- for internal CAs and TLS-intercepting
+    /// proxies. Same scope and override rules as `proxy`.
+    #[serde(default)]
+    pub tls_ca_file: Option<std::path::PathBuf>,
+
+    /// Disable TLS certificate verification for outbound connections.
+    /// LAST RESORT for closed test setups: anyone on the network path can
+    /// then impersonate the peers -- prefer `tls_ca_file`. Same scope and
+    /// override rules as `proxy`.
+    #[serde(default)]
+    pub tls_accept_invalid_certs: bool,
+
     /// Apps this gateway delivers for, keyed by app_id.
     #[serde(default)]
     pub apps: HashMap<String, AppConfig>,
@@ -132,6 +145,55 @@ pub struct PollUpstream {
     /// connection even when a top-level proxy is set.
     #[serde(default)]
     pub proxy: Option<String>,
+
+    /// Extra root certificates (PEM bundle) for THIS upstream, overriding
+    /// the top-level `tls_ca_file`. An empty string drops the top-level one.
+    #[serde(default)]
+    pub tls_ca_file: Option<std::path::PathBuf>,
+
+    /// Disable TLS certificate verification for THIS upstream, overriding
+    /// the top-level `tls_accept_invalid_certs`. Unset inherits.
+    #[serde(default)]
+    pub tls_accept_invalid_certs: Option<bool>,
+}
+
+/// The resolved outbound-HTTP settings a client is built from: the
+/// top-level `proxy`/`tls_*` keys, per `[[poll]]` upstream with that
+/// entry's overrides applied.
+#[derive(Debug, Clone, Default)]
+pub struct HttpOptions {
+    pub proxy: Option<String>,
+    pub tls_ca_file: Option<std::path::PathBuf>,
+    pub tls_accept_invalid_certs: bool,
+}
+
+impl Config {
+    /// The top-level outbound-HTTP settings (delivery backends, and the
+    /// default the `[[poll]]` upstreams inherit).
+    pub fn http_options(&self) -> HttpOptions {
+        HttpOptions {
+            proxy: self.proxy.clone(),
+            tls_ca_file: self.tls_ca_file.clone(),
+            tls_accept_invalid_certs: self.tls_accept_invalid_certs,
+        }
+    }
+}
+
+impl PollUpstream {
+    /// This upstream's outbound-HTTP settings: the defaults with any
+    /// per-upstream overrides applied.
+    pub fn http_options(&self, defaults: &HttpOptions) -> HttpOptions {
+        HttpOptions {
+            proxy: self.proxy.clone().or_else(|| defaults.proxy.clone()),
+            tls_ca_file: self
+                .tls_ca_file
+                .clone()
+                .or_else(|| defaults.tls_ca_file.clone()),
+            tls_accept_invalid_certs: self
+                .tls_accept_invalid_certs
+                .unwrap_or(defaults.tls_accept_invalid_certs),
+        }
+    }
 }
 
 fn default_poll_timeout_secs() -> u64 {
@@ -384,6 +446,54 @@ mod tests {
 
         let c: Config = toml::from_str("").unwrap();
         assert!(c.proxy.is_none());
+        assert!(c.tls_ca_file.is_none());
+        assert!(!c.tls_accept_invalid_certs);
+    }
+
+    #[test]
+    fn poll_upstream_inherits_and_overrides_http_options() {
+        let c: Config = toml::from_str(
+            r#"
+            proxy = "http://internet-proxy.internal:3128"
+            tls_ca_file = "/etc/pincerbell/keys/internal-ca.pem"
+
+            [[poll]]
+            url = "https://edge1.example.test"
+            auth_token_file = "/etc/pincerbell/keys/t1"
+
+            [[poll]]
+            url = "https://edge2.example.test"
+            auth_token_file = "/etc/pincerbell/keys/t2"
+            proxy = "http://queue-proxy.internal:3128"
+            tls_ca_file = ""
+            tls_accept_invalid_certs = true
+            "#,
+        )
+        .unwrap();
+        let defaults = c.http_options();
+
+        let inherited = c.poll[0].http_options(&defaults);
+        assert_eq!(
+            inherited.proxy.as_deref(),
+            Some("http://internet-proxy.internal:3128")
+        );
+        assert_eq!(
+            inherited.tls_ca_file.as_deref(),
+            Some(std::path::Path::new("/etc/pincerbell/keys/internal-ca.pem"))
+        );
+        assert!(!inherited.tls_accept_invalid_certs);
+
+        let overridden = c.poll[1].http_options(&defaults);
+        assert_eq!(
+            overridden.proxy.as_deref(),
+            Some("http://queue-proxy.internal:3128")
+        );
+        // "" overrides the inherited CA file; http_client treats it as none.
+        assert_eq!(
+            overridden.tls_ca_file.as_deref(),
+            Some(std::path::Path::new(""))
+        );
+        assert!(overridden.tls_accept_invalid_certs);
     }
 
     #[test]

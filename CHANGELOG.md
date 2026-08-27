@@ -13,6 +13,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   the queue side sits behind a different proxy than the internet. An empty
   per-upstream `proxy` forces a direct connection; a malformed proxy URL
   fails at startup like the credential files.
+- Outbound TLS options with the same scope and override scheme:
+  `tls_ca_file` adds extra trusted root certificates (PEM bundle; internal
+  CAs, TLS-intercepting proxies), `tls_accept_invalid_certs` disables
+  certificate verification entirely -- a last resort for closed test
+  setups, loudly warned about at startup.
+- Poll-side startup preflight: each `[[poll]]` upstream's `/health` is
+  probed once over the same client the poll loop uses (proxy, TLS options)
+  and the result logged -- an immediate verdict on whether the queue sides
+  are reachable, before the first long-poll.
 
 ## [0.2.0] - 2026-08-25
 
