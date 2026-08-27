@@ -1,0 +1,53 @@
+# Build the container image and push it to GHCR, so deployment hosts can
+# `podman pull ghcr.io/isnogudus/pincerbell` instead of building locally.
+#
+# Tags: `latest` + `sha-<commit>` on every build; releases (v* tags) add
+# the semver tags (0.2.0, 0.2). Path-filtered on main so doc-only pushes
+# skip the build; tag pushes always build (GitHub ignores path filters
+# for tags).
+
+name: Container
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - Cargo.toml
+      - Cargo.lock
+      - "src/**"
+      - .github/workflows/container.yml
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
