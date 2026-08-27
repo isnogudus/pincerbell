@@ -95,6 +95,20 @@ The `[apps]` tables are exactly the ones a direct deployment would have
 tables poll more queue sides; each upstream gets its own loop with
 reconnect backoff.
 
+Networks that only reach out through forward proxies are covered too — a
+top-level `proxy` routes delivery to the push services, and each `[[poll]]`
+entry takes its own `proxy` when the queue side sits behind a different
+one (an empty string there forces a direct connection):
+
+```toml
+proxy = "http://internet-proxy.internal:3128"
+
+[[poll]]
+url = "https://push-edge.example.org"
+auth_token_file = "/etc/pincerbell/keys/queue-token"
+proxy = "http://queue-proxy.internal:3128"
+```
+
 ## 4. Verify
 
 Start both sides and send a test notification to the queue side:

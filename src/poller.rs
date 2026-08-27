@@ -18,17 +18,26 @@ use crate::config::PollUpstream;
 use crate::gateway::{AppState, Disposition, deliver_one};
 use crate::queue::{AckRequest, PollRequest, PollResponse, RejectedPushkey};
 
-/// A `[[poll]]` upstream with its token loaded; fails fast at startup on an
-/// unreadable token file, like the other credential files.
+/// A `[[poll]]` upstream with its token loaded and its HTTP client built;
+/// fails fast at startup on an unreadable token file or a malformed proxy
+/// URL, like the other credential files.
 pub struct Upstream {
     url: String,
     token: String,
     timeout_secs: u64,
     max_batch: usize,
+    client: reqwest::Client,
 }
 
 impl Upstream {
-    pub fn load(cfg: &PollUpstream) -> Result<Upstream, String> {
+    pub fn load(cfg: &PollUpstream, default_proxy: Option<&str>) -> Result<Upstream, String> {
+        // Per-upstream proxy wins over the top-level one; an empty string
+        // opts out of both (http_client treats it as "direct").
+        let proxy = cfg.proxy.as_deref().or(default_proxy);
+        // No overall timeout: requests hold up to the long-poll duration;
+        // poll_once bounds each request individually.
+        let client = crate::provider::http_client(proxy, None)
+            .map_err(|e| format!("poll {}: {e}", cfg.url))?;
         let raw = std::fs::read_to_string(&cfg.auth_token_file).map_err(|e| {
             format!(
                 "poll auth_token_file {}: {e}",
@@ -47,6 +56,7 @@ impl Upstream {
             token: token.to_owned(),
             timeout_secs: cfg.timeout_secs,
             max_batch: cfg.max_batch,
+            client,
         })
     }
 }
@@ -54,11 +64,10 @@ impl Upstream {
 /// The per-upstream loop: poll, deliver, ack, forever. Connection errors
 /// back off exponentially (1s..60s) and reset on the next success.
 pub async fn run(state: Arc<AppState>, up: Upstream) {
-    let client = reqwest::Client::new();
     let mut backoff = Duration::from_secs(1);
     tracing::info!(url = %up.url, "polling upstream queue");
     loop {
-        match poll_once(&client, &state, &up).await {
+        match poll_once(&state, &up).await {
             Ok(_) => backoff = Duration::from_secs(1),
             Err(e) => {
                 tracing::warn!(url = %up.url, error = %e, "poll failed, backing off");
@@ -71,12 +80,9 @@ pub async fn run(state: Arc<AppState>, up: Upstream) {
 
 /// One poll/deliver/ack cycle; returns the number of fetched entries. An
 /// empty long-poll timeout is a normal Ok(0).
-pub async fn poll_once(
-    client: &reqwest::Client,
-    state: &AppState,
-    up: &Upstream,
-) -> Result<usize, String> {
-    let resp = client
+pub async fn poll_once(state: &AppState, up: &Upstream) -> Result<usize, String> {
+    let resp = up
+        .client
         .post(format!("{}/_pincerbell/v1/poll", up.url))
         .bearer_auth(&up.token)
         // Room on top of the server-side hold, not a second poll interval.
@@ -125,7 +131,8 @@ pub async fn poll_once(
     }
 
     if !ack.acked.is_empty() || !ack.rejected_pushkeys.is_empty() {
-        let resp = client
+        let resp = up
+            .client
             .post(format!("{}/_pincerbell/v1/ack", up.url))
             .bearer_auth(&up.token)
             .timeout(Duration::from_secs(30))
@@ -184,6 +191,7 @@ mod tests {
             token: "relay-token".to_owned(),
             timeout_secs: 0, // empty polls return immediately in tests
             max_batch: 100,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -213,12 +221,11 @@ mod tests {
         assert_eq!(json["rejected"], serde_json::json!([]));
 
         let state = poll_side_state("[apps.\"org.example.app\"]\nkind = \"log\"");
-        let client = reqwest::Client::new();
-        let n = poll_once(&client, &state, &upstream(&url)).await.unwrap();
+        let n = poll_once(&state, &upstream(&url)).await.unwrap();
         assert_eq!(n, 1, "the queued entry is fetched and log-delivered");
 
         // Acked upstream: nothing left to fetch.
-        let n = poll_once(&client, &state, &upstream(&url)).await.unwrap();
+        let n = poll_once(&state, &upstream(&url)).await.unwrap();
         assert_eq!(n, 0);
     }
 
@@ -235,8 +242,7 @@ mod tests {
 
         // Poll side knows no such app and is configured to reject.
         let state = poll_side_state("reject_unknown_apps = true");
-        let client = reqwest::Client::new();
-        let n = poll_once(&client, &state, &upstream(&url)).await.unwrap();
+        let n = poll_once(&state, &upstream(&url)).await.unwrap();
         assert_eq!(n, 1);
 
         // The NEXT notify for that pushkey now answers rejected.
@@ -249,10 +255,9 @@ mod tests {
     async fn wrong_token_is_refused() {
         let url = spawn_queue_side().await;
         let state = poll_side_state("");
-        let client = reqwest::Client::new();
         let mut up = upstream(&url);
         up.token = "wrong".to_owned();
-        let err = poll_once(&client, &state, &up).await.unwrap_err();
+        let err = poll_once(&state, &up).await.unwrap_err();
         assert!(err.contains("401"), "got: {err}");
     }
 }

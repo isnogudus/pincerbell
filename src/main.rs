@@ -78,14 +78,18 @@ async fn main() -> ExitCode {
         env!("CARGO_PKG_VERSION"),
     );
 
-    let upstreams: Vec<poller::Upstream> =
-        match config.poll.iter().map(poller::Upstream::load).collect() {
-            Ok(u) => u,
-            Err(e) => {
-                tracing::error!("config: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let upstreams: Vec<poller::Upstream> = match config
+        .poll
+        .iter()
+        .map(|p| poller::Upstream::load(p, config.proxy.as_deref()))
+        .collect()
+    {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!("config: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let listen = config.listen.clone();
     let state = match AppState::new(config) {

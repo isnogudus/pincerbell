@@ -9,6 +9,12 @@
 # Only serves /health here; keep it local.
 #listen = "127.0.0.1:8300"
 
+# Forward proxy for delivering to the push services (FCM, APNs, ...). Each
+# [[poll]] upstream can override it with its own `proxy` -- for networks
+# where the queue side sits behind a DIFFERENT proxy than the internet
+# ("" there forces a direct connection). Unset: direct connections.
+#proxy = "http://internet-proxy.internal:3128"
+
 # The app list lives on THIS side. reject_unknown_apps works here too:
 # rejections travel back with the acknowledgements, and the queue side
 # answers "rejected" on the homeserver's next notify. Enable only once the
@@ -24,6 +30,8 @@ auth_token_file = "/etc/pincerbell/keys/queue-token"
 #timeout_secs = 30
 # Entries fetched per poll.
 #max_batch = 100
+# Proxy for THIS upstream, overriding the top-level `proxy` ("" = direct).
+#proxy = "http://queue-proxy.internal:3128"
 
 # A second upstream, if one poll side serves several queue sides:
 #

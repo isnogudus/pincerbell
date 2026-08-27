@@ -1,10 +1,31 @@
 //! Delivery backends and the outcome vocabulary the gateway acts on.
 
+use std::time::Duration;
+
 use crate::api::{Device, Notification};
 use crate::apns::{ApnsApp, ApnsSettings};
 use crate::config::AppConfig;
 use crate::fcm::FcmApp;
 use crate::webpush::{WebPushApp, WebPushSettings};
+
+/// Builds the reqwest client every outbound path uses, honoring an optional
+/// forward proxy. An unset or empty proxy means direct connections (an empty
+/// string is how a `[[poll]]` entry opts back out of the top-level proxy).
+/// A malformed proxy URL fails here, at startup, like the credential files.
+pub fn http_client(
+    proxy: Option<&str>,
+    timeout: Option<Duration>,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(t) = timeout {
+        builder = builder.timeout(t);
+    }
+    if let Some(url) = proxy.filter(|p| !p.is_empty()) {
+        let proxy = reqwest::Proxy::all(url).map_err(|e| format!("proxy {url}: {e}"))?;
+        builder = builder.proxy(proxy);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
 
 /// One constructed delivery backend per configured app.
 pub enum Provider {
@@ -34,7 +55,7 @@ pub enum Outcome {
 }
 
 impl Provider {
-    pub fn new(config: &AppConfig) -> Result<Provider, String> {
+    pub fn new(config: &AppConfig, proxy: Option<&str>) -> Result<Provider, String> {
         match config {
             AppConfig::Log => Ok(Provider::Log),
             AppConfig::Fcm {
@@ -45,6 +66,7 @@ impl Provider {
                 service_account_file,
                 project_id.clone(),
                 api_root.clone(),
+                proxy,
             )?))),
             AppConfig::Apns {
                 key_file,
@@ -66,6 +88,7 @@ impl Provider {
                 default_alert_title: default_alert_title.clone(),
                 sound: sound.clone(),
                 push_type: *push_type,
+                proxy: proxy.map(str::to_owned),
             })?))),
             AppConfig::Webpush {
                 vapid_private_key,
@@ -76,6 +99,7 @@ impl Provider {
                     vapid_private_key: vapid_private_key.clone(),
                     vapid_contact_email: vapid_contact_email.clone(),
                     allowed_endpoints: allowed_endpoints.clone(),
+                    proxy: proxy.map(str::to_owned),
                 },
             )?))),
         }

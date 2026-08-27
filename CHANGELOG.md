@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Forward-proxy support for all outbound HTTP(S): a top-level `proxy` key
+  routes delivery to the push services (FCM, APNs, Web Push), and each
+  `[[poll]]` upstream takes its own `proxy` override -- for networks where
+  the queue side sits behind a different proxy than the internet. An empty
+  per-upstream `proxy` forces a direct connection; a malformed proxy URL
+  fails at startup like the credential files.
+
 ## [0.2.0] - 2026-08-25
 
 The queue/poll relay release: split deployments across networks that

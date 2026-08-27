@@ -33,6 +33,13 @@ pub struct Config {
     #[serde(default)]
     pub reject_unknown_apps: bool,
 
+    /// Forward proxy for outbound HTTP(S), e.g. "http://proxy.internal:3128"
+    /// (credentials as URL userinfo if the proxy wants them). Applies to the
+    /// delivery backends (FCM, APNs, Web Push) and, unless overridden there,
+    /// to the `[[poll]]` upstreams. Unset means direct connections.
+    #[serde(default)]
+    pub proxy: Option<String>,
+
     /// Apps this gateway delivers for, keyed by app_id.
     #[serde(default)]
     pub apps: HashMap<String, AppConfig>,
@@ -118,6 +125,13 @@ pub struct PollUpstream {
     /// Maximum entries fetched per poll.
     #[serde(default = "default_poll_max_batch")]
     pub max_batch: usize,
+
+    /// Forward proxy for reaching THIS upstream, overriding the top-level
+    /// `proxy` -- for networks where the queue side sits behind a different
+    /// proxy than the push services. An empty string forces a direct
+    /// connection even when a top-level proxy is set.
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 fn default_poll_timeout_secs() -> u64 {
@@ -344,6 +358,32 @@ mod tests {
                 toml::from_str(&raw).unwrap_or_else(|e| panic!("{name} does not parse: {e}"));
             assert!(check(&c), "{name} does not configure its mode");
         }
+    }
+
+    #[test]
+    fn proxy_keys_parse() {
+        let c: Config = toml::from_str(
+            r#"
+            proxy = "http://internet-proxy.internal:3128"
+
+            [[poll]]
+            url = "https://edge.example.test"
+            auth_token_file = "/etc/pincerbell/keys/queue-token"
+            proxy = "http://queue-proxy.internal:3128"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.proxy.as_deref(),
+            Some("http://internet-proxy.internal:3128")
+        );
+        assert_eq!(
+            c.poll[0].proxy.as_deref(),
+            Some("http://queue-proxy.internal:3128")
+        );
+
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.proxy.is_none());
     }
 
     #[test]

@@ -43,6 +43,7 @@ pub struct WebPushSettings {
     pub vapid_private_key: std::path::PathBuf,
     pub vapid_contact_email: String,
     pub allowed_endpoints: Vec<String>,
+    pub proxy: Option<String>,
 }
 
 pub struct WebPushApp {
@@ -80,10 +81,8 @@ impl WebPushApp {
             .or_else(|_| p256::SecretKey::from_sec1_pem(&pem))
             .map_err(|e| format!("{}: {e}", settings.vapid_private_key.display()))?;
         let public_key_b64 = B64.encode(secret.public_key().to_encoded_point(false).as_bytes());
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client =
+            crate::provider::http_client(settings.proxy.as_deref(), Some(Duration::from_secs(15)))?;
         Ok(WebPushApp {
             client,
             signing_key: p256::ecdsa::SigningKey::from(&secret),
@@ -502,6 +501,7 @@ pub(crate) mod tests {
             vapid_private_key: "/nonexistent.pem".into(),
             vapid_contact_email: "admin@example.test".into(),
             allowed_endpoints: vec![],
+            proxy: None,
         });
         let Err(err) = result else {
             panic!("empty allowlist must be refused")
